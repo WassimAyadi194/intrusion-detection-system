@@ -1,41 +1,43 @@
-from constants import *
-from logs.logger import write_log
 import time
 
-ip_counter = {}
+class PacketThresholdDetector:
+    def __init__(self):
+        self.packet_counts = {}
+        self.WINDOW = 10
+        self.THRESHOLD = 200
 
-class Colors:
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    BLUE = '\033[34m'
-    RESET = '\033[0m'
+    def analyze_packet(self, pkt):
+        '''if not pkt.haslayer("IP"):
+            return None'''
 
-def detect(pkt):
-    src = pkt["IP"].src
-    dst = pkt["IP"].dst
-    now = time.time()
+        src = pkt["IP"].src
+        now = time.time()
+        #print(f"INTERFACE: {pkt.sniffed_on} // TCP FLAGS: {pkt["TCP"].flags}")
+        alerts = []
+        if src not in self.packet_counts:
+            self.packet_counts[src] = {
+                "count": 0,
+                "start": now
+            }
 
-    # Initialize or update entry
-    if src not in ip_counter:
-        ip_counter[src] = [1, now]
-    else:
-        ip_counter[src][0] += 1
-        ip_counter[src][1] = now
+        entry = self.packet_counts[src]
+        entry["count"] += 1
 
-    # Detection rule
-    if ip_counter[src][0] == PACKETS_THRESHOLD:
-        alert = f"{Colors.RED}ALERT: Repeated packets from {src}{Colors.RESET}"
-        print(alert)
-        write_log(alert)
+        if now - entry["start"] <= self.WINDOW:
+            if entry["count"] >= self.THRESHOLD:
+                alerts.append(f"PACKET FLOOD DETECTED from {src}")
+                del self.packet_counts[src]
+        else:
+            self.packet_counts[src] = {
+                "count": 1,
+                "start": now
+            }
 
-    # Cleanup old entries
-    for ip in list(ip_counter.keys()):
-        if now - ip_counter[ip][1] > COUNTER_WINDOW:
-            del ip_counter[ip]
-            print(f"{Colors.YELLOW}{ip} deleted for inactivity{Colors.RESET}")
+        self.cleanup(now)
 
-    # Safety limit
-    if len(ip_counter) > MAX_HOSTS:
-        ip_counter.clear()
-        print(f"{Colors.BLUE}IP COUNTER REACHED LIMIT. REINITIALIZATION SUCCESSFUL{Colors.RESET}")
+        return alerts if alerts else None
+
+    def cleanup(self, now):
+        for src in list(self.packet_counts.keys()):
+            if now - self.packet_counts[src]["start"] > self.WINDOW:
+                del self.packet_counts[src]
