@@ -1,3 +1,4 @@
+#data_collector.py
 import sqlite3
 import time
 import queue
@@ -21,7 +22,6 @@ class LiveMetricsCollector:
         self.anomaly_detector = AnomalyDetector()
 
     def process_packet(self, pkt):
-        # Correct Scapy syntax: use 'in' to check, pkt["Layer"] to access
         if "IP" not in pkt or "TCP" not in pkt:
             return
 
@@ -31,18 +31,18 @@ class LiveMetricsCollector:
         flags = pkt["TCP"].flags
         data  = self.host_data[src]
 
-        if flags & 0x02:  # SYN flag — counts as a new connection attempt
+        if flags & 0x02:  # SYN — new connection attempt
             data["syn_count"] += 1
 
         data["unique_ports"].add(dport)
         data["unique_destinations"].add(dst)
 
     def flush_window(self):
-        conn   = sqlite3.connect(DB_NAME, timeout=5)
-        cursor = conn.cursor()
+        conn      = sqlite3.connect(DB_NAME, timeout=5)
+        cursor    = conn.cursor()
         timestamp = int(time.time())
 
-        # Snapshot metrics before clearing so anomaly detection can use them
+        # Snapshot before clearing so anomaly detection can use the values
         snapshot = {}
         for host_ip, metrics in self.host_data.items():
             snapshot[host_ip] = {
@@ -56,12 +56,12 @@ class LiveMetricsCollector:
                 INSERT INTO live_metrics
                     (host_ip, timestamp, syn_count, unique_ports, unique_destinations)
                 VALUES (?, ?, ?, ?, ?)
-            """, (host_ip, timestamp, m["syn_count"], m["unique_ports"], m["unique_destinations"]))
+            """, (host_ip, timestamp,
+                  m["syn_count"], m["unique_ports"], m["unique_destinations"]))
 
         conn.commit()
-        conn.close()  # release the lock before anomaly detector opens its own connection
+        conn.close()  # release lock before anomaly detector opens its own connection
 
-        # Run anomaly detection now that the DB lock is free
         for host_ip, m in snapshot.items():
             self.anomaly_detector.analyze_and_save(
                 host_ip=host_ip,
@@ -70,7 +70,6 @@ class LiveMetricsCollector:
                 unique_destinations=m["unique_destinations"],
             )
 
-        # Reset window
         self.host_data.clear()
         self.window_start = time.time()
 
@@ -80,7 +79,7 @@ class LiveMetricsCollector:
                 pkt = self.packet_capture.collector_queue.get(timeout=1)
                 self.process_packet(pkt)
             except queue.Empty:
-                pass  # normal — no packet arrived in the last second
+                pass  # normal — no packet in the last second
 
             if time.time() - self.window_start >= WINDOW_SIZE:
                 self.flush_window()

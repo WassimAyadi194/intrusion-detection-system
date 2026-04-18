@@ -1,3 +1,4 @@
+#anomaly_detector.py
 import sqlite3
 import time
 
@@ -136,7 +137,7 @@ class AnomalyDetector:
         """
         baseline = self._load_baseline(host_ip)
         if baseline is None:
-            return []  # No baseline yet — silent until training runs
+            return None  # No baseline yet — silent until training runs
 
         timestamp = int(time.time())
         alerts = []

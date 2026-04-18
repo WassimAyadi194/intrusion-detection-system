@@ -1,16 +1,12 @@
+#baseline_trainer.py
 import sqlite3
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 
 DB_NAME = "ids.db"
-
-# Minimum number of metric windows required before a baseline is considered
-# reliable enough to use for anomaly detection.
 MIN_SAMPLES = 10
 
-
 def compute_stddev(values: list[float], mean: float) -> float:
-    """Population standard deviation. Returns 0.0 if fewer than 2 samples."""
     if len(values) < 2:
         return 0.0
     variance = sum((v - mean) ** 2 for v in values) / len(values)
@@ -18,20 +14,10 @@ def compute_stddev(values: list[float], mean: float) -> float:
 
 
 def train_baseline(host_ip: str | None = None):
-    """
-    Reads live_metrics from the database and computes per-host statistical
-    baselines (mean + stddev for each metric). Results are upserted into the
-    baseline table.
-
-    Args:
-        host_ip: If provided, only retrain the baseline for that host.
-                 If None, retrain all hosts found in live_metrics.
-    """
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    # Fetch distinct hosts to process
     if host_ip:
         cursor.execute(
             "SELECT DISTINCT host_ip FROM live_metrics WHERE host_ip = ?",
@@ -64,9 +50,9 @@ def train_baseline(host_ip: str | None = None):
             skipped += 1
             continue
 
-        syn_vals   = [r["syn_count"]            for r in rows]
-        port_vals  = [r["unique_ports"]          for r in rows]
-        dest_vals  = [r["unique_destinations"]   for r in rows]
+        syn_vals  = [r["syn_count"]          for r in rows]
+        port_vals = [r["unique_ports"]        for r in rows]
+        dest_vals = [r["unique_destinations"] for r in rows]
 
         def stats(vals):
             mean = sum(vals) / len(vals)
@@ -98,7 +84,7 @@ def train_baseline(host_ip: str | None = None):
             avg_syn, std_syn,
             avg_ports, std_ports,
             avg_dests, std_dests,
-            datetime.now(datetime.timezone.utc).isoformat()
+            datetime.now(timezone.utc).isoformat()
         ))
 
         print(

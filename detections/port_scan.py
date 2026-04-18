@@ -1,3 +1,4 @@
+#port_scan.py
 import time
 
 class PortScanDetector:
@@ -9,6 +10,8 @@ class PortScanDetector:
         self.HOST_THRESHOLD = 10
 
     def analyze_packet(self, pkt):
+        if "TCP" not in pkt:
+            return None
 
         flags = pkt["TCP"].flags
 
@@ -16,11 +19,10 @@ class PortScanDetector:
         if not flags & 0x02:
             return None
 
-
-        src = pkt["IP"].src
-        dst = pkt["IP"].dst
+        src   = pkt["IP"].src
+        dst   = pkt["IP"].dst
         dport = pkt["TCP"].dport
-        now = time.time()
+        now   = time.time()
 
         alerts = []
 
@@ -31,7 +33,6 @@ class PortScanDetector:
             self.vertical_scan[vkey] = {"ports": set(), "time": now}
 
         self.vertical_scan[vkey]["ports"].add(dport)
-        #print(f"Vertical scan key {vkey} port counts: {len(self.vertical_scan[vkey]["ports"])} // Ports: {self.vertical_scan[vkey]["ports"]}")
 
         if (
             len(self.vertical_scan[vkey]["ports"]) >= self.PORT_THRESHOLD

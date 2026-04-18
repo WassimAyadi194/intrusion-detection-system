@@ -1,5 +1,5 @@
+#connection_tracking.py
 import time
-
 
 class ConnectionTracker:
     def __init__(self):
@@ -10,22 +10,22 @@ class ConnectionTracker:
         if not pkt.haslayer("IP") or not pkt.haslayer("TCP"):
             return None
 
-        src = pkt["IP"].src
-        dst = pkt["IP"].dst
+        src   = pkt["IP"].src
+        dst   = pkt["IP"].dst
         sport = pkt["TCP"].sport
         dport = pkt["TCP"].dport
         flags = pkt["TCP"].flags
 
         key = (src, dst, sport, dport)
         now = time.time()
-        
+
         alerts = []
 
-        if flags & 0x02:
+        if flags & 0x02:                        # SYN
             self.connections[key] = now
             alerts.append(f"Connection detected: {src} -> {dst}")
 
-        elif flags == "FA" or flags == "R":
+        elif (flags & 0x01) or (flags & 0x04):  # FIN or RST
             if key in self.connections:
                 del self.connections[key]
                 alerts.append(f"Connection terminated: {src} -> {dst}")
@@ -38,4 +38,3 @@ class ConnectionTracker:
         for key in list(self.connections.keys()):
             if now - self.connections[key] > self.TIMEOUT:
                 del self.connections[key]
-                #alerts.append(f"Connection ({key[0]} -> {key[1]}) deleted due to timeout")

@@ -1,40 +1,53 @@
-import socket
-from scapy.all import get_working_ifaces, conf
+#interface_utils.py
+import subprocess
+import re
 
-def get_active_interface():
-    #Socket connection to retrieve the outbound traffic IP
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-
-    except OSError as e:
-        raise RuntimeError(f"Socket routing detection failed: {e}")
-    
-    #Finding the interface's name
-    try:
-        for iface in get_working_ifaces():
-            if iface.ip == local_ip:
-                return iface.name, local_ip
-            
-        raise RuntimeError(f"No interface found matching outbound IP {local_ip}")
-    
-    except Exception as e:
-        raise RuntimeError(f"Interface enumeration failed: {e}")
-
-def banner(interface, capture_filter):
-    if conf.use_pcap:
-        print(
-            " === IDS STARTUP ===\n",
-            f"Interface: {interface}\n",
-            "Npcap: OK\n",
-            f"Capture filter: {capture_filter}\n",
-            "===================\n"
-        )
-    else:
-        raise RuntimeError("ERROR: Npcap may be stopped. Service restart recommended.")
+def get_tshark_interfaces():
+    result = subprocess.run(
+        ["tshark", "-D"],
+        capture_output=True,
+        text=True
+    )
+    interfaces = []
+    for line in result.stdout.splitlines():
+        # tshark -D output on Windows:
+        #   1. \Device\NPF_{GUID} (Wi-Fi)
+        # on Linux:
+        #   1. eth0
+        # We capture: index, device path, and optional friendly name in parens.
+        match = re.match(r"^(\d+)\.\s+(\S+)(?:\s+\((.+)\))?", line)
+        if match:
+            idx, device, friendly = match.groups()
+            name = (friendly or device).strip()
+            interfaces.append({
+                "index": idx,
+                "device": device,
+                "name": name,
+            })
+    return interfaces
 
 
-#print(get_working_ifaces())
-#banner(get_active_interface(),"IP")
+def get_relevant_interfaces():
+    interfaces = get_tshark_interfaces()
+
+    selected = []
+    for iface in interfaces:
+        name = iface["name"].strip().lower()
+        if (
+            #name == "wi-fi" or
+            "ethernet" in name
+            #"loopback" in name
+        ):
+            selected.append(iface)
+
+    return selected
+
+
+def banner(ifaces):
+    names = [iface["name"] for iface in ifaces]
+    print(
+        " === IDS STARTUP ===\n",
+        f"Interfaces : {', '.join(names)}\n",
+        "Capture    : tshark (TCP+UDP)\n",
+        "===================\n",
+    )
