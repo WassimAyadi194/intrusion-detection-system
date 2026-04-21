@@ -24,7 +24,7 @@ conf.bufsize = 2**24  # 4MB
 sniff(iface = interfaces,  filter="tcp", store=0, count=10000000000, prn= lambda x: x.summary())
 '''
 
-
+'''
 import subprocess
 import re
 
@@ -65,3 +65,6 @@ def get_relevant_interfaces():
 
     return selected
 print(get_relevant_interfaces())
+'''
+import os
+print("[DB PATH]", os.path.abspath("ids.db"))

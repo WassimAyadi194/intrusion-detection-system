@@ -34,9 +34,9 @@ def get_relevant_interfaces():
     for iface in interfaces:
         name = iface["name"].strip().lower()
         if (
-            #name == "wi-fi" or
-            "ethernet" in name
-            #"loopback" in name
+            name == "wi-fi" or
+            "ethernet" in name or
+            "loopback" in name
         ):
             selected.append(iface)
 
@@ -48,6 +48,6 @@ def banner(ifaces):
     print(
         " === IDS STARTUP ===\n",
         f"Interfaces : {', '.join(names)}\n",
-        "Capture    : tshark (TCP+UDP)\n",
+        "Capture    : tshark (TCP)\n",
         "===================\n",
     )

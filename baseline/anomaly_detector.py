@@ -1,4 +1,4 @@
-#anomaly_detector.py
+# baseline/anomaly_detector.py
 import sqlite3
 import time
 
@@ -85,6 +85,13 @@ class AnomalyDetector:
                 f"contacted {int(val)} distinct hosts in 10s (normal: ~{avg:.0f})"
             ),
         ),
+        "packet_count": (
+            "total packets",
+            lambda host, val, avg: (
+                f"Abnormal packet volume from {host} — "
+                f"{int(val)} packets in 10s (normal: ~{avg:.0f})"
+            ),
+        ),
     }
 
     def _check_metric(
@@ -97,8 +104,14 @@ class AnomalyDetector:
         timestamp: int,
     ) -> dict | None:
         """
-        Computes the Z-score for one metric. Returns an alert dict if the
+        Computes the Z-score for one metric. Returns a raw alert dict if the
         score exceeds Z_THRESHOLD, otherwise None.
+
+        The returned dict uses the unified schema expected by AlertGate:
+            src, type, metric, severity, message, timestamp
+        It also carries the extra DB fields (value, baseline_avg, baseline_std)
+        so save_alerts() can persist them without losing information.
+        novelty is always None for anomaly alerts — the column is nullable.
         """
         effective_std = max(std, STD_FLOOR)
         z = (value - avg) / effective_std
@@ -113,31 +126,39 @@ class AnomalyDetector:
             ("unknown", lambda host, val, avg: f"Anomalous {metric} from {host}: {int(val)} (normal: ~{avg:.0f})")
         )
 
+        description = description_fn(host_ip, value, avg)
+
         return {
-            "host_ip":      host_ip,
+            # Unified AlertGate fields
+            "src":          host_ip,
+            "type":         "anomaly",
             "metric":       metric,
+            "severity":     severity,
+            "message":      description,
+            "timestamp":    timestamp,
+            # Extra fields kept for DB persistence (save_alerts uses these)
+            "host_ip":      host_ip,
             "value":        round(value, 2),
             "baseline_avg": round(avg, 2),
             "baseline_std": round(std, 2),
-            "severity":     severity,
-            "timestamp":    timestamp,
-            "description":  description_fn(host_ip, value, avg),
+            "description":  description,
+            # novelty is not applicable to anomaly alerts; stored as NULL
+            "novelty":      None,
         }
+    
+# In analyze(), update the signature and the checks list:
 
-    def analyze_window(
+    def analyze(
         self,
         host_ip: str,
         syn_count: int,
         unique_ports: int,
         unique_destinations: int,
+        packet_count: int = 0,          # ← NEW, default=0 keeps old callers safe
     ) -> list[dict]:
-        """
-        Compare a completed metrics window against the stored baseline.
-        Returns a (possibly empty) list of alert dicts.
-        """
         baseline = self._load_baseline(host_ip)
         if baseline is None:
-            return None  # No baseline yet — silent until training runs
+            return []
 
         timestamp = int(time.time())
         alerts = []
@@ -146,6 +167,7 @@ class AnomalyDetector:
             ("syn_count",           syn_count,           baseline["avg_syn"],                  baseline["std_syn"]),
             ("unique_ports",        unique_ports,        baseline["avg_unique_ports"],          baseline["std_unique_ports"]),
             ("unique_destinations", unique_destinations, baseline["avg_unique_destinations"],   baseline["std_unique_destinations"]),
+            ("packet_count",        packet_count,        baseline.get("avg_packet_count", 0),   baseline.get("std_packet_count", 0)),  # ← NEW
         ]
 
         for metric, value, avg, std in checks:
@@ -165,21 +187,10 @@ class AnomalyDetector:
         cursor.executemany("""
             INSERT INTO alerts
                 (host_ip, metric, value, baseline_avg, baseline_std,
-                 severity, timestamp, description)
+                 severity, timestamp, description, novelty)
             VALUES
                 (:host_ip, :metric, :value, :baseline_avg, :baseline_std,
-                 :severity, :timestamp, :description)
+                 :severity, :timestamp, :description, :novelty)
         """, alerts)
         conn.commit()
         conn.close()
-
-    def analyze_and_save(self, host_ip: str, **metrics) -> list[dict]:
-        """Convenience method: analyze a window and immediately persist alerts."""
-        alerts = self.analyze_window(host_ip, **metrics)
-        if alerts:
-            self.save_alerts(alerts)
-            for a in alerts:
-                print(
-                    f"[ANOMALY] {a['severity']} | {a['host_ip']} | {a['description']}"
-                )
-        return alerts

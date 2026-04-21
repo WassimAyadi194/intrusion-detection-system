@@ -1,5 +1,6 @@
-#port_scan.py
+# detections/port_scan.py
 import time
+
 
 class PortScanDetector:
     def __init__(self):
@@ -9,7 +10,7 @@ class PortScanDetector:
         self.PORT_THRESHOLD = 8
         self.HOST_THRESHOLD = 10
 
-    def analyze_packet(self, pkt):
+    def analyze_packet(self, pkt) -> list[dict] | None:
         if "TCP" not in pkt:
             return None
 
@@ -38,7 +39,14 @@ class PortScanDetector:
             len(self.vertical_scan[vkey]["ports"]) >= self.PORT_THRESHOLD
             and now - self.vertical_scan[vkey]["time"] <= self.SCAN_WINDOW
         ):
-            alerts.append(f"\nVERTICAL SCAN: {src} → {dst}\n")
+            alerts.append({
+                "src":       src,
+                "type":      "port_scan",
+                "metric":    "vertical",
+                "severity":  "HIGH",
+                "message":   f"VERTICAL SCAN: {src} → {dst}",
+                "timestamp": int(now),
+            })
             del self.vertical_scan[vkey]
 
         # ---- Horizontal port scan ----
@@ -53,7 +61,14 @@ class PortScanDetector:
             len(self.horizontal_scan[hkey]["hosts"]) >= self.HOST_THRESHOLD
             and now - self.horizontal_scan[hkey]["time"] <= self.SCAN_WINDOW
         ):
-            alerts.append(f"HORIZONTAL SCAN: {src} on port {dport}")
+            alerts.append({
+                "src":       src,
+                "type":      "port_scan",
+                "metric":    "horizontal",
+                "severity":  "HIGH",
+                "message":   f"HORIZONTAL SCAN: {src} on port {dport}",
+                "timestamp": int(now),
+            })
             del self.horizontal_scan[hkey]
 
         self.cleanup(now)

@@ -1,4 +1,4 @@
-#baseline_trainer.py
+# baseline_trainer.py
 import sqlite3
 import math
 from datetime import datetime, timezone
@@ -38,7 +38,7 @@ def train_baseline(host_ip: str | None = None):
 
     for ip in hosts:
         cursor.execute("""
-            SELECT syn_count, unique_ports, unique_destinations
+            SELECT syn_count, unique_ports, unique_destinations, packet_count
             FROM live_metrics
             WHERE host_ip = ?
             ORDER BY timestamp ASC
@@ -50,9 +50,10 @@ def train_baseline(host_ip: str | None = None):
             skipped += 1
             continue
 
-        syn_vals  = [r["syn_count"]          for r in rows]
-        port_vals = [r["unique_ports"]        for r in rows]
-        dest_vals = [r["unique_destinations"] for r in rows]
+        syn_vals    = [r["syn_count"]           for r in rows]
+        port_vals   = [r["unique_ports"]         for r in rows]
+        dest_vals   = [r["unique_destinations"]  for r in rows]
+        pkt_vals    = [r["packet_count"] or 0    for r in rows]  # ← NEW (guard NULL from old rows)
 
         def stats(vals):
             mean = sum(vals) / len(vals)
@@ -62,6 +63,18 @@ def train_baseline(host_ip: str | None = None):
         avg_syn,   std_syn   = stats(syn_vals)
         avg_ports, std_ports = stats(port_vals)
         avg_dests, std_dests = stats(dest_vals)
+        avg_pkts,  std_pkts  = stats(pkt_vals)  # ← NEW
+
+        # BUG FIX: original code had `avg_syn, = round(avg_syn, 3)` which
+        # attempted to unpack a float as a tuple and would raise TypeError.
+        avg_syn   = round(avg_syn,   3)
+        std_syn   = round(std_syn,   3)
+        avg_ports = round(avg_ports, 3)
+        std_ports = round(std_ports, 3)
+        avg_dests = round(avg_dests, 3)
+        std_dests = round(std_dests, 3)
+        avg_pkts  = round(avg_pkts,  3)  # ← NEW
+        std_pkts  = round(std_pkts,  3)  # ← NEW
 
         cursor.execute("""
             INSERT INTO baseline (
@@ -69,8 +82,9 @@ def train_baseline(host_ip: str | None = None):
                 avg_syn, std_syn,
                 avg_unique_ports, std_unique_ports,
                 avg_unique_destinations, std_unique_destinations,
+                avg_packet_count, std_packet_count,
                 last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(host_ip) DO UPDATE SET
                 avg_syn                  = excluded.avg_syn,
                 std_syn                  = excluded.std_syn,
@@ -78,12 +92,15 @@ def train_baseline(host_ip: str | None = None):
                 std_unique_ports         = excluded.std_unique_ports,
                 avg_unique_destinations  = excluded.avg_unique_destinations,
                 std_unique_destinations  = excluded.std_unique_destinations,
+                avg_packet_count         = excluded.avg_packet_count,
+                std_packet_count         = excluded.std_packet_count,
                 last_updated             = excluded.last_updated
         """, (
             ip,
-            avg_syn, std_syn,
+            avg_syn,   std_syn,
             avg_ports, std_ports,
             avg_dests, std_dests,
+            avg_pkts,  std_pkts,   # ← NEW
             datetime.now(timezone.utc).isoformat()
         ))
 
@@ -91,7 +108,8 @@ def train_baseline(host_ip: str | None = None):
             f"[OK] {ip} — {len(rows)} samples | "
             f"syn={avg_syn:.1f}±{std_syn:.1f}  "
             f"ports={avg_ports:.1f}±{std_ports:.1f}  "
-            f"dests={avg_dests:.1f}±{std_dests:.1f}"
+            f"dests={avg_dests:.1f}±{std_dests:.1f}  "
+            f"pkts={avg_pkts:.1f}±{std_pkts:.1f}"   # ← NEW
         )
         trained += 1
 

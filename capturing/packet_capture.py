@@ -2,8 +2,11 @@ import subprocess
 import threading
 import queue
 import sys
+import time
 
-DEBUG = True  # Set to False once packets are confirmed working
+DEBUG = False  # Set to True only for initial tshark bring-up diagnostics.
+               # Leaving True in production blocks the capture thread on every
+               # packet via synchronous stderr writes — primary slowdown cause.
 
 
 class _Layer:
@@ -137,6 +140,7 @@ class PacketCapture:
 
             parsed_count = 0
             raw_count = 0
+            _last_stats = time.monotonic()
 
             try:
                 for line in proc.stdout:
@@ -148,19 +152,26 @@ class PacketCapture:
                         continue
 
                     raw_count += 1
-                    if DEBUG and raw_count <= 5:
-                        print(f"[DEBUG] Raw line #{raw_count}: {repr(line)}", file=sys.stderr)
 
                     pkt = _parse_tshark_line(line)
                     if pkt is None:
                         continue
 
                     parsed_count += 1
-                    if DEBUG and parsed_count <= 5:
-                        print(f"[DEBUG] Parsed packet #{parsed_count}: {pkt['IP'].src} -> {pkt['IP'].dst}", file=sys.stderr)
-
                     self.engine_queue.put(pkt)
                     self.collector_queue.put(pkt)
+
+                    # Periodic stats log — one print per 5 s instead of per packet.
+                    if DEBUG:
+                        _now = time.monotonic()
+                        if _now - _last_stats >= 5.0:
+                            print(
+                                f"[DEBUG] capture stats: raw={raw_count} parsed={parsed_count} "
+                                f"engine_q={self.engine_queue.qsize()} "
+                                f"collector_q={self.collector_queue.qsize()}",
+                                file=sys.stderr,
+                            )
+                            _last_stats = _now
 
             finally:
                 proc.terminate()
