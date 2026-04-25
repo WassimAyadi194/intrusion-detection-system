@@ -2,7 +2,10 @@
 import time
 import ipaddress
 
-RECURRING_THRESHOLD = 10  # connections before a host is considered recurring
+# Module-level constants (neither is instance-specific)
+RECURRING_THRESHOLD = 10   # SYN count before a host is classified as recurring
+CONNECTION_TIMEOUT  = 60   # seconds before an idle tracked connection is expired
+CLEANUP_INTERVAL    = 10   # seconds between connection-table cleanup passes
 
 
 def _is_loopback(src: str) -> bool:
@@ -15,14 +18,11 @@ def _is_loopback(src: str) -> bool:
 class ConnectionTracker:
     def __init__(self, baseline_hosts: set[str] | None = None):
         self.connections: dict = {}
-        self.TIMEOUT = 60
         self.baseline_hosts: set[str] = baseline_hosts or set()
-        # In-memory per-session SYN counter per host (not persisted)
         self._syn_counts: dict[str, int] = {}
+        self._last_cleanup: float = 0.0
 
     def _classify_novelty(self, src: str) -> str:
-        # Loopback is always internal — classifying it as 'new' or 'recurring'
-        # produces misleading noise.  Use a dedicated label instead.
         if _is_loopback(src):
             return "loopback"
         count = self._syn_counts.get(src, 0)
@@ -48,7 +48,6 @@ class ConnectionTracker:
         alerts = []
 
         if flags & 0x02:  # SYN
-            # Increment counter before classification so first hit counts
             self._syn_counts[src] = self._syn_counts.get(src, 0) + 1
             novelty = self._classify_novelty(src)
 
@@ -71,16 +70,19 @@ class ConnectionTracker:
                     "type":      "connection",
                     "metric":    "terminated",
                     "severity":  "INFO",
-                    "novelty":   None,   # termination events have no novelty classification
+                    "novelty":   None,
                     "message":   f"Connection terminated: {src} -> {dst}",
                     "timestamp": int(now),
                 })
 
-        self.cleanup(now)
+        # Throttled cleanup — only iterates the table every CLEANUP_INTERVAL seconds
+        if now - self._last_cleanup >= CLEANUP_INTERVAL:
+            self.cleanup(now)
+            self._last_cleanup = now
 
         return alerts if alerts else None
 
     def cleanup(self, now: float) -> None:
         for key in list(self.connections.keys()):
-            if now - self.connections[key] > self.TIMEOUT:
+            if now - self.connections[key] > CONNECTION_TIMEOUT:
                 del self.connections[key]

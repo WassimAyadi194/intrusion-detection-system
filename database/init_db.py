@@ -1,10 +1,13 @@
 # init_db.py
 import sqlite3
 
-DB_NAME = "ids.db"
+from config import DB_NAME
 
 def initialize_database():
     conn = sqlite3.connect(DB_NAME)
+    # WAL mode is persistent — set once here so every subsequent connection
+    # benefits without paying the PRAGMA round-trip on each open.
+    conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
 
     # Baseline Table
@@ -41,6 +44,15 @@ def initialize_database():
         ON live_metrics(host_ip, timestamp);
     """)
 
+    # Standalone timestamp index — used by the startup DELETE that prunes rows
+    # older than LIVE_METRICS_RETENTION_HOURS.  A plain `WHERE timestamp < ?`
+    # predicate cannot use the composite (host_ip, timestamp) index efficiently
+    # because timestamp is not the leading column there.
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_live_timestamp
+        ON live_metrics(timestamp);
+    """)
+
     # Alerts Table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS alerts (
@@ -57,7 +69,26 @@ def initialize_database():
         );
     """)
 
-    # ── Migration guards for pre-existing databases ──────────────────────────
+    # Logs Table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS logs (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            level     TEXT,
+            module    TEXT,
+            message   TEXT
+        );
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_logs_level
+        ON logs(level);
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_logs_timestamp
+        ON logs(timestamp);
+    """)
 
     # novelty column (original guard, kept intact)
     try:
@@ -83,7 +114,6 @@ def initialize_database():
     conn.commit()
     conn.close()
     print("Database initialized successfully.")
-
 
 if __name__ == "__main__":
     initialize_database()

@@ -1,11 +1,19 @@
-# baseline_trainer.py
+# baseline/baseline_trainer.py
 import sqlite3
 import math
 from datetime import datetime, timezone
 
-DB_NAME = "ids.db"
+from config import DB_NAME, BASELINE_EMA_ALPHA
+
+# ── Minimum sample threshold ───────────────────────────────────────────────────
+# We need at least this many windows of data before we are willing to compute
+# statistics (avoids noise from a single window dominating the baseline).
 MIN_SAMPLES = 10
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: population standard deviation
+# ─────────────────────────────────────────────────────────────────────────────
 def compute_stddev(values: list[float], mean: float) -> float:
     if len(values) < 2:
         return 0.0
@@ -13,11 +21,44 @@ def compute_stddev(values: list[float], mean: float) -> float:
     return math.sqrt(variance)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: Exponential Moving Average blend
+# ─────────────────────────────────────────────────────────────────────────────
+def _ema(old: float, new: float, alpha: float = BASELINE_EMA_ALPHA) -> float:
+    """
+    Blend *new* into *old* using EMA:
+        result = (1 - alpha) * old + alpha * new
+
+    A small alpha (e.g. 0.1) means 90 % of the stored value is preserved on
+    each retraining cycle, so the baseline adapts slowly and is resistant to
+    transient spikes.
+    """
+    return (1.0 - alpha) * old + alpha * new
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main trainer
+# ─────────────────────────────────────────────────────────────────────────────
 def train_baseline(host_ip: str | None = None):
+    """
+    Compute fresh statistics from live_metrics and persist them to the
+    baseline table.
+
+    Behaviour when a prior baseline row exists for a host
+    ─────────────────────────────────────────────────────
+    Each statistic is blended with the stored value via EMA (see _ema()).
+    This means the baseline retains memory across retraining runs and will
+    not be thrown off by a single unusual collection window.
+
+    Behaviour when no prior row exists
+    ───────────────────────────────────
+    Statistics are inserted as-is (normal cold-start initialisation).
+    """
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
+    # ── Gather the set of hosts to train ──────────────────────────────────────
     if host_ip:
         cursor.execute(
             "SELECT DISTINCT host_ip FROM live_metrics WHERE host_ip = ?",
@@ -37,6 +78,7 @@ def train_baseline(host_ip: str | None = None):
     skipped = 0
 
     for ip in hosts:
+        # ── Fetch raw live-metrics windows for this host ──────────────────────
         cursor.execute("""
             SELECT syn_count, unique_ports, unique_destinations, packet_count
             FROM live_metrics
@@ -50,32 +92,65 @@ def train_baseline(host_ip: str | None = None):
             skipped += 1
             continue
 
-        syn_vals    = [r["syn_count"]           for r in rows]
-        port_vals   = [r["unique_ports"]         for r in rows]
-        dest_vals   = [r["unique_destinations"]  for r in rows]
-        pkt_vals    = [r["packet_count"] or 0    for r in rows]  # ← NEW (guard NULL from old rows)
+        # ── Compute fresh statistics from the collected windows ───────────────
+        syn_vals  = [r["syn_count"]          for r in rows]
+        port_vals = [r["unique_ports"]        for r in rows]
+        dest_vals = [r["unique_destinations"] for r in rows]
+        pkt_vals  = [r["packet_count"] or 0  for r in rows]  # guard NULL from old rows
 
-        def stats(vals):
+        def stats(vals: list[float]) -> tuple[float, float]:
             mean = sum(vals) / len(vals)
             std  = compute_stddev(vals, mean)
             return mean, std
 
-        avg_syn,   std_syn   = stats(syn_vals)
-        avg_ports, std_ports = stats(port_vals)
-        avg_dests, std_dests = stats(dest_vals)
-        avg_pkts,  std_pkts  = stats(pkt_vals)  # ← NEW
+        new_avg_syn,   new_std_syn   = stats(syn_vals)
+        new_avg_ports, new_std_ports = stats(port_vals)
+        new_avg_dests, new_std_dests = stats(dest_vals)
+        new_avg_pkts,  new_std_pkts  = stats(pkt_vals)
 
-        # BUG FIX: original code had `avg_syn, = round(avg_syn, 3)` which
-        # attempted to unpack a float as a tuple and would raise TypeError.
+        # ── Load any existing baseline row for this host ──────────────────────
+        cursor.execute(
+            "SELECT * FROM baseline WHERE host_ip = ?", (ip,)
+        )
+        existing = cursor.fetchone()
+
+        if existing is not None:
+            # ── EMA blend: nudge stored values toward newly-computed ones ─────
+            # We apply the same alpha to both the mean and the std so that the
+            # baseline's uncertainty estimate also adapts gradually.
+            avg_syn   = _ema(existing["avg_syn"],                 new_avg_syn)
+            std_syn   = _ema(existing["std_syn"],                 new_std_syn)
+            avg_ports = _ema(existing["avg_unique_ports"],        new_avg_ports)
+            std_ports = _ema(existing["std_unique_ports"],        new_std_ports)
+            avg_dests = _ema(existing["avg_unique_destinations"], new_avg_dests)
+            std_dests = _ema(existing["std_unique_destinations"], new_std_dests)
+
+            # avg/std_packet_count may be NULL in older DB rows — default to 0
+            avg_pkts  = _ema(existing["avg_packet_count"] or 0.0, new_avg_pkts)
+            std_pkts  = _ema(existing["std_packet_count"] or 0.0, new_std_pkts)
+
+            mode = "EMA"
+        else:
+            # ── Cold start: no prior record — use fresh values directly ────────
+            avg_syn,   std_syn   = new_avg_syn,   new_std_syn
+            avg_ports, std_ports = new_avg_ports, new_std_ports
+            avg_dests, std_dests = new_avg_dests, new_std_dests
+            avg_pkts,  std_pkts  = new_avg_pkts,  new_std_pkts
+
+            mode = "INIT"
+
+        # Round for compact storage; precision beyond 3 d.p. is not meaningful
+        # given the 10-second window granularity.
         avg_syn   = round(avg_syn,   3)
         std_syn   = round(std_syn,   3)
         avg_ports = round(avg_ports, 3)
         std_ports = round(std_ports, 3)
         avg_dests = round(avg_dests, 3)
         std_dests = round(std_dests, 3)
-        avg_pkts  = round(avg_pkts,  3)  # ← NEW
-        std_pkts  = round(std_pkts,  3)  # ← NEW
+        avg_pkts  = round(avg_pkts,  3)
+        std_pkts  = round(std_pkts,  3)
 
+        # ── Persist (upsert) ──────────────────────────────────────────────────
         cursor.execute("""
             INSERT INTO baseline (
                 host_ip,
@@ -100,16 +175,16 @@ def train_baseline(host_ip: str | None = None):
             avg_syn,   std_syn,
             avg_ports, std_ports,
             avg_dests, std_dests,
-            avg_pkts,  std_pkts,   # ← NEW
+            avg_pkts,  std_pkts,
             datetime.now(timezone.utc).isoformat()
         ))
 
         print(
-            f"[OK] {ip} — {len(rows)} samples | "
+            f"[{mode}] {ip} — {len(rows)} samples | "
             f"syn={avg_syn:.1f}±{std_syn:.1f}  "
             f"ports={avg_ports:.1f}±{std_ports:.1f}  "
             f"dests={avg_dests:.1f}±{std_dests:.1f}  "
-            f"pkts={avg_pkts:.1f}±{std_pkts:.1f}"   # ← NEW
+            f"pkts={avg_pkts:.1f}±{std_pkts:.1f}"
         )
         trained += 1
 

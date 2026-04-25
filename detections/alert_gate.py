@@ -1,7 +1,6 @@
 # detections/alert_gate.py
 import threading
 import time
-from typing import Optional
 import ipaddress
 
 # Default cooldown in seconds before the same (src, type, metric) key can fire again.
@@ -93,24 +92,6 @@ class AlertGate:
                 self._last_seen[key] = now
                 return alert
             return None
-
-    @staticmethod
-    def normalize(
-        src: str,
-        alert_type: str,
-        message: str,
-        metric: Optional[str] = None,
-        severity: Optional[str] = None,
-        timestamp: Optional[int] = None,
-    ) -> dict:
-        return {
-            "src":       src,
-            "type":      alert_type,
-            "metric":    metric,
-            "severity":  severity,
-            "message":   message,
-            "timestamp": timestamp if timestamp is not None else int(time.time()),
-        }
 
     @staticmethod
     def _dedup_key(alert: dict) -> tuple:

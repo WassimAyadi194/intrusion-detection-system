@@ -1,6 +1,8 @@
 # detections/port_scan.py
 import time
 
+CLEANUP_INTERVAL = 10  # seconds between scan-table cleanup passes
+
 
 class PortScanDetector:
     def __init__(self):
@@ -9,9 +11,10 @@ class PortScanDetector:
         self.SCAN_WINDOW = 30
         self.PORT_THRESHOLD = 8
         self.HOST_THRESHOLD = 10
+        self._last_cleanup: float = 0.0
 
     def analyze_packet(self, pkt) -> list[dict] | None:
-        if "TCP" not in pkt:
+        if "IP" not in pkt or "TCP" not in pkt:
             return None
 
         flags = pkt["TCP"].flags
@@ -71,11 +74,14 @@ class PortScanDetector:
             })
             del self.horizontal_scan[hkey]
 
-        self.cleanup(now)
+        # Throttled cleanup
+        if now - self._last_cleanup >= CLEANUP_INTERVAL:
+            self.cleanup(now)
+            self._last_cleanup = now
 
         return alerts if alerts else None
 
-    def cleanup(self, now):
+    def cleanup(self, now: float) -> None:
         for k in list(self.vertical_scan.keys()):
             if now - self.vertical_scan[k]["time"] > self.SCAN_WINDOW:
                 del self.vertical_scan[k]

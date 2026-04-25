@@ -6,30 +6,28 @@ from engine.ids_engine import DetectionEngine
 from database.init_db import initialize_database
 from baseline.data_collector import LiveMetricsCollector
 from baseline.anomaly_detector import AnomalyDetector
+from logs.ids_logger import get_logger, shutdown as shutdown_logger
+
+log = get_logger(__name__)
 
 
 def main():
     initialize_database()
 
     ifaces = get_relevant_interfaces()
-    banner(ifaces)
+    banner(ifaces)  # prints interface names to stdout
 
-    # Start packet capture — tshark needs the interface name explicitly
     packet_capture = PacketCapture()
-    packet_capture.start_capture([iface["index"] for iface in ifaces])
+    iface_names = [iface["index"] for iface in ifaces]
+    packet_capture.start_capture(iface_names)
 
-    # AnomalyDetector is pure detection + persistence; no gate knowledge.
     anomaly_detector = AnomalyDetector()
 
-    # DetectionEngine owns the AlertGate and orchestrates all gating,
-    # saving, and printing for both rule-based and anomaly alerts.
     engine = DetectionEngine(
         packet_capture=packet_capture,
         anomaly_detector=anomaly_detector,
     )
 
-    # LiveMetricsCollector calls engine.process_anomaly() — engine is the
-    # single orchestration point, so no direct anomaly_detector reference needed.
     metrics_collector = LiveMetricsCollector(packet_capture, engine)
     collector_thread = threading.Thread(
         target=metrics_collector.run,
@@ -37,15 +35,20 @@ def main():
         name="MetricsCollector",
     )
     collector_thread.start()
-    print("Live metrics collector started.")
 
-    # Detection engine runs on the main thread
+    log.info("IDS started — interfaces: %s", ", ".join(str(i["index"]) for i in ifaces))
+
     try:
         engine.run()
     except KeyboardInterrupt:
-        print("\nStopping IDS...")
+        pass
+    finally:
+        log.info("Shutdown requested — stopping IDS.")
         metrics_collector.stop()
+        collector_thread.join(timeout=5)
         packet_capture.stop()
+        log.info("IDS shut down cleanly.")
+        shutdown_logger()
 
 
 if __name__ == "__main__":
