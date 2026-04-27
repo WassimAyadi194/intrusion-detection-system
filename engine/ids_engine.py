@@ -16,6 +16,12 @@ log = get_logger(__name__)
 _BATCH_MAX     = 64    # max packets to drain per iteration
 _BATCH_TIMEOUT = 0.05  # seconds to wait for at least one packet
 
+# Severities that are informational only — excluded from both DB writes and
+# the UI alert queue. Connection tracking emits INFO on every SYN/FIN packet;
+# allowing these through _alert_queue at zero cooldown saturates the UI feed
+# and starves the collector queue at wire speed.
+_UI_EXCLUDE_SEVERITIES = {"INFO", "LOW"}
+
 
 def _load_baseline_hosts(db_name: str = DB_NAME) -> set[str]:
     """Load all known host IPs from the baseline table once at startup."""
@@ -100,7 +106,7 @@ def _to_db_row(alert: dict) -> dict:
 
 
 class DetectionEngine:
-    def __init__(self, packet_capture=None, anomaly_detector=None):
+    def __init__(self, packet_capture=None, anomaly_detector=None, alert_queue=None):
         baseline_hosts = _load_baseline_hosts()
 
         self.port_scan          = PortScanDetector()
@@ -108,6 +114,7 @@ class DetectionEngine:
         self.packet_threshold   = PacketThresholdDetector()
         self.packet_capture     = packet_capture
         self.anomaly_detector   = anomaly_detector
+        self._alert_queue       = alert_queue
 
         # AlertGate is the single suppression authority for ALL alert types.
         self.alert_gate = AlertGate()
@@ -120,16 +127,13 @@ class DetectionEngine:
         """
         Persist a batch of gated alerts.
 
-        INFO/LOW alerts are never written to the DB (connection events,
-        low-noise thresholds) — they are printed but not stored.
+        INFO/LOW alerts are never written to the DB — they are connection
+        tracking events and low-noise thresholds not worth storing.
         All other severities (MEDIUM, HIGH, CRITICAL) are persisted.
-
-        This is the only persistence path in the system — anomaly alerts
-        go through here too, preventing double-writes.
         """
         rows = [
             _to_db_row(a) for a in alerts
-            if a.get("severity") not in ("INFO", "LOW")
+            if a.get("severity") not in _UI_EXCLUDE_SEVERITIES
         ]
         if rows:
             _db_write_with_retry(_ALERT_INSERT_SQL, rows)
@@ -188,6 +192,11 @@ class DetectionEngine:
             for a in allowed:
                 print(f"[ANOMALY] {a['severity']} | {a['src']} | {a['message']}")
 
+            if self._alert_queue is not None:
+                for a in allowed:
+                    if a.get("severity") not in _UI_EXCLUDE_SEVERITIES:
+                        self._alert_queue.put_nowait(a)
+
         return allowed
 
     # ------------------------------------------------------------------
@@ -221,7 +230,17 @@ class DetectionEngine:
                 if all_allowed:
                     self._save_alerts(all_allowed)
                     for a in all_allowed:
-                        print(f"[{a['severity']}] {a['type'].upper()} | {a['message']}")
+                        msg = f"[{a['severity']}] {a['type'].upper()} | {a['message']}"
+                        print(msg.encode(errors="replace").decode())
+
+                    # Only push actionable alerts to the UI queue.
+                    # INFO/LOW are connection tracking noise — at zero cooldown
+                    # and wire-speed SYN rates they would saturate _alert_queue
+                    # and crowd out HIGH/CRITICAL alerts in the feed.
+                    if self._alert_queue is not None:
+                        for a in all_allowed:
+                            if a.get("severity") not in _UI_EXCLUDE_SEVERITIES:
+                                self._alert_queue.put_nowait(a)
 
             except KeyboardInterrupt:
                 break

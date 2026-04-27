@@ -5,15 +5,14 @@ from datetime import datetime, timezone
 
 from config import DB_NAME, BASELINE_EMA_ALPHA
 
-# ── Minimum sample threshold ───────────────────────────────────────────────────
+# Minimum sample threshold
 # We need at least this many windows of data before we are willing to compute
 # statistics (avoids noise from a single window dominating the baseline).
 MIN_SAMPLES = 10
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Helper: population standard deviation
-# ─────────────────────────────────────────────────────────────────────────────
 def compute_stddev(values: list[float], mean: float) -> float:
     if len(values) < 2:
         return 0.0
@@ -21,9 +20,8 @@ def compute_stddev(values: list[float], mean: float) -> float:
     return math.sqrt(variance)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Helper: Exponential Moving Average blend
-# ─────────────────────────────────────────────────────────────────────────────
 def _ema(old: float, new: float, alpha: float = BASELINE_EMA_ALPHA) -> float:
     """
     Blend *new* into *old* using EMA:
@@ -36,9 +34,8 @@ def _ema(old: float, new: float, alpha: float = BASELINE_EMA_ALPHA) -> float:
     return (1.0 - alpha) * old + alpha * new
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Main trainer
-# ─────────────────────────────────────────────────────────────────────────────
 def train_baseline(host_ip: str | None = None):
     """
     Compute fresh statistics from live_metrics and persist them to the
@@ -58,7 +55,7 @@ def train_baseline(host_ip: str | None = None):
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    # ── Gather the set of hosts to train ──────────────────────────────────────
+    # Gather the set of hosts to train
     if host_ip:
         cursor.execute(
             "SELECT DISTINCT host_ip FROM live_metrics WHERE host_ip = ?",
@@ -78,7 +75,7 @@ def train_baseline(host_ip: str | None = None):
     skipped = 0
 
     for ip in hosts:
-        # ── Fetch raw live-metrics windows for this host ──────────────────────
+        # Fetch raw live-metrics windows for this host
         cursor.execute("""
             SELECT syn_count, unique_ports, unique_destinations, packet_count
             FROM live_metrics

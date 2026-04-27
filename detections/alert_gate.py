@@ -7,8 +7,13 @@ import ipaddress
 DEFAULT_COOLDOWN = 15
 # HIGH alerts get a shorter cooldown.
 HIGH_COOLDOWN = 5
-# INFO alerts (non malicious) get an even shorter cooldown
-INFO_COOLDOWN = 0
+# INFO/LOW alerts: previously 0 (no suppression), which caused connection
+# tracking to emit an alert on every single SYN and FIN/RST packet at wire
+# speed. This saturated _alert_queue and collector_queue, crowding out real
+# alerts and causing the UI feed to appear capped.
+# Set to 30 s — long enough to suppress per-packet noise, short enough to
+# still surface genuine connection state changes.
+INFO_COOLDOWN = 30
 # CRITICAL alerts bypass cooldown entirely — they always emit.
 CRITICAL_SEVERITY = "CRITICAL"
 HIGH_SEVERITY = "HIGH"
@@ -37,6 +42,7 @@ class AlertGate:
 
         CRITICAL  → always allowed (no cooldown)
         HIGH      → 5 s cooldown
+        INFO/LOW  → 30 s cooldown
         everything else → 15 s cooldown
 
     Thread-safe via a single reentrant lock.
@@ -54,7 +60,8 @@ class AlertGate:
         # Maps dedup_key -> last_allowed_timestamp
         self._last_seen: dict[tuple, float] = {}
         self._lock = threading.RLock()
-    #Public API
+
+    # Public API
     def process(self, alert: dict) -> dict | None:
         """
         Return the alert dict if it should be emitted right now, else None.

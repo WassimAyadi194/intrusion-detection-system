@@ -10,7 +10,11 @@ from config import DB_NAME, DB_MAX_RETRIES, DB_RETRY_DELAY, LIVE_METRICS_RETENTI
 
 log = get_logger(__name__)
 
-WINDOW_SIZE = 10  # seconds per metric window
+WINDOW_SIZE = 10   # seconds per metric window
+
+# Maximum packets drained from collector_queue per loop iteration.
+# Mirrors the engine's _BATCH_MAX to keep processing symmetrical.
+_COLLECTOR_BATCH_MAX = 64
 
 
 def _make_host_entry() -> dict:
@@ -31,8 +35,6 @@ class LiveMetricsCollector:
         self.window_start = time.time()
 
         # One-time startup cleanup: remove stale rows in a single SQL pass.
-        # Done here so it runs exactly once per process lifetime and never
-        # again during the collection loop — zero recurring overhead.
         self._prune_old_metrics()
 
     def process_packet(self, pkt):
@@ -47,7 +49,7 @@ class LiveMetricsCollector:
 
         data["packet_count"] += 1
 
-        if flags & 0x02:  # SYN — new connection attempt
+        if flags & 0x02:  # SYN
             data["syn_count"] += 1
 
         data["unique_ports"].add(dport)
@@ -116,26 +118,10 @@ class LiveMetricsCollector:
 
     # ── Startup cleanup ───────────────────────────────────────────────────────
     def _prune_old_metrics(self) -> None:
-        """
-        Delete all live_metrics rows whose timestamp is older than
-        LIVE_METRICS_RETENTION_HOURS.
-
-        Design decisions
-        ────────────────
-        * Single DELETE statement — the DB engine resolves the set of matching
-          rows in one pass using the idx_live_timestamp index; no row-by-row
-          iteration in Python.
-        * Called only in __init__ — runs exactly once per process lifetime so
-          there is no recurring query cost during the collection loop.
-        * Unix-epoch arithmetic is used (timestamp column stores integers) so
-          there is no text-parsing overhead inside SQLite.
-        """
         cutoff = int(time.time()) - LIVE_METRICS_RETENTION_HOURS * 3600
         conn = self._db_connect()
         if conn is None:
-            log.warning(
-                "Startup cleanup skipped — could not open DB connection."
-            )
+            log.warning("Startup cleanup skipped — could not open DB connection.")
             return
         try:
             cursor = conn.cursor()
@@ -157,10 +143,6 @@ class LiveMetricsCollector:
             conn.close()
 
     def _db_connect(self):
-        """
-        Open a DB connection with retry. Returns the connection or None if
-        all attempts fail (caller must handle None gracefully).
-        """
         last_exc: Exception | None = None
         for attempt in range(1 + DB_MAX_RETRIES):
             try:
@@ -180,17 +162,42 @@ class LiveMetricsCollector:
     def run(self):
         log.info("Live metrics collector started (window=%ds)", WINDOW_SIZE)
         while not self._stop_event.is_set():
+            # ── Batch drain ───────────────────────────────────────────────────
+            # Previously this loop processed one packet per iteration, causing
+            # collector_queue to accumulate thousands of packets under load
+            # (hitting QUEUE_SIZE_HARD_LIMIT = 6000 and dropping traffic).
+            #
+            # Now we drain up to _COLLECTOR_BATCH_MAX packets per iteration,
+            # symmetric with the engine's batch strategy. The blocking get()
+            # with timeout=1 is kept only for the first packet so the thread
+            # sleeps efficiently when the queue is genuinely empty, instead of
+            # spinning. Subsequent packets in the same batch use get_nowait()
+            # to avoid re-blocking once we know data is flowing.
             try:
-                pkt = self.packet_capture.collector_queue.get(timeout=1)
-                self.process_packet(pkt)
+                first = self.packet_capture.collector_queue.get(timeout=1)
             except queue.Empty:
-                pass
+                # No packets — check window boundary and loop.
+                elapsed = time.time() - self.window_start
+                if elapsed >= WINDOW_SIZE:
+                    flush_duration = self.flush_window()
+                    self.window_start = time.time() - flush_duration
+                continue
 
+            self.process_packet(first)
+            drained = 1
+
+            while drained < _COLLECTOR_BATCH_MAX:
+                try:
+                    pkt = self.packet_capture.collector_queue.get_nowait()
+                    self.process_packet(pkt)
+                    drained += 1
+                except queue.Empty:
+                    break
+
+            # ── Window flush ──────────────────────────────────────────────────
             elapsed = time.time() - self.window_start
             if elapsed >= WINDOW_SIZE:
                 flush_duration = self.flush_window()
-                # Compensate: next window_start is adjusted back by however
-                # long the flush took, keeping window boundaries stable.
                 self.window_start = time.time() - flush_duration
 
         log.info("Live metrics collector stopping.")
