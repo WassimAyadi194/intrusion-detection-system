@@ -6,16 +6,9 @@ import threading
 from collections import defaultdict
 
 from logs.ids_logger import get_logger
-from config import DB_NAME, DB_MAX_RETRIES, DB_RETRY_DELAY, LIVE_METRICS_RETENTION_HOURS
+from config import DB_NAME, DB_MAX_RETRIES, DB_RETRY_DELAY, LIVE_METRICS_RETENTION_HOURS, WINDOW_SIZE, COLLECTOR_BATCH_MAX
 
 log = get_logger(__name__)
-
-WINDOW_SIZE = 10   # seconds per metric window
-
-# Maximum packets drained from collector_queue per loop iteration.
-# Mirrors the engine's _BATCH_MAX to keep processing symmetrical.
-_COLLECTOR_BATCH_MAX = 64
-
 
 def _make_host_entry() -> dict:
     return {
@@ -29,12 +22,14 @@ def _make_host_entry() -> dict:
 class LiveMetricsCollector:
     def __init__(self, packet_capture, engine):
         self.packet_capture = packet_capture
-        self.engine = engine
-        self._stop_event = threading.Event()
-        self.host_data = defaultdict(_make_host_entry)
-        self.window_start = time.time()
+        self.engine         = engine
+        self._stop_event    = threading.Event()
+        self.host_data      = defaultdict(_make_host_entry)
+        self.window_start   = time.time()
 
-        # One-time startup cleanup: remove stale rows in a single SQL pass.
+        # Snapshot of the most-recently completed 10-second window.
+        self._last_window: dict[str, dict] = {}
+ 
         self._prune_old_metrics()
 
     def process_packet(self, pkt):
@@ -76,6 +71,8 @@ class LiveMetricsCollector:
             }
             for host_ip, m in old_data.items()
         }
+
+        self._last_window = snapshot   # atomic reference replacement
 
         if cursor is not None:
             try:
@@ -162,17 +159,6 @@ class LiveMetricsCollector:
     def run(self):
         log.info("Live metrics collector started (window=%ds)", WINDOW_SIZE)
         while not self._stop_event.is_set():
-            # ── Batch drain ───────────────────────────────────────────────────
-            # Previously this loop processed one packet per iteration, causing
-            # collector_queue to accumulate thousands of packets under load
-            # (hitting QUEUE_SIZE_HARD_LIMIT = 6000 and dropping traffic).
-            #
-            # Now we drain up to _COLLECTOR_BATCH_MAX packets per iteration,
-            # symmetric with the engine's batch strategy. The blocking get()
-            # with timeout=1 is kept only for the first packet so the thread
-            # sleeps efficiently when the queue is genuinely empty, instead of
-            # spinning. Subsequent packets in the same batch use get_nowait()
-            # to avoid re-blocking once we know data is flowing.
             try:
                 first = self.packet_capture.collector_queue.get(timeout=1)
             except queue.Empty:
@@ -186,7 +172,7 @@ class LiveMetricsCollector:
             self.process_packet(first)
             drained = 1
 
-            while drained < _COLLECTOR_BATCH_MAX:
+            while drained < COLLECTOR_BATCH_MAX:
                 try:
                     pkt = self.packet_capture.collector_queue.get_nowait()
                     self.process_packet(pkt)

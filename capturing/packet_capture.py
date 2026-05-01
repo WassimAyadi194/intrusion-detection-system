@@ -3,25 +3,16 @@ import threading
 import queue
 import ipaddress
 import time
+from datetime import datetime
 
 from logs.ids_logger import get_logger
+from config import (
+    _MAX_RESTARTS, _RESTART_BACKOFF, _STALL_TIMEOUT, 
+    _STALL_CHECK_INTERVAL, _QUEUE_WARN_INTERVAL, _QUEUE_WARN_DEPTH, 
+    MAX_QUEUE_SIZE, QUEUE_SIZE_HARD_LIMIT, _HEARTBEAT_INTERVAL
+    )
 
 log = get_logger(__name__)
-
-# ── Restart / stall config ────────────────────────────────────────────────────
-_MAX_RESTARTS    = 3      # total restart attempts after first failure
-_RESTART_BACKOFF = 0.5    # seconds between restart attempts
-_STALL_TIMEOUT   = 30     # seconds with no packets before logging a warning
-_STALL_CHECK_INTERVAL = 5 # how often the stall-monitor thread wakes up (seconds)
-
-# ── Queue-depth monitoring and backpressure ───────────────────────────────────
-_QUEUE_WARN_INTERVAL = 30   # seconds between periodic queue-depth checks
-_QUEUE_WARN_DEPTH    = 500  # log a WARNING when either queue exceeds this
-MAX_QUEUE_SIZE       = 2000 # packets — drop loopback/low-priority above this
-QUEUE_SIZE_HARD_LIMIT = MAX_QUEUE_SIZE * 3
-# ── Heartbeat ─────────────────────────────────────────────────────────────────
-_HEARTBEAT_INTERVAL  = 60   # seconds between system-healthy log lines
-
 
 class _Layer:
     def __init__(self, fields: dict):
@@ -101,19 +92,22 @@ class PacketCapture:
         self.collector_queue = queue.Queue()   # unbounded; low-priority packets dropped at limit
         self._stop_event     = threading.Event()
 
-        # Shared state written by capture thread, read by stall monitor.
         self._last_packet_ts: float = 0.0
         self._last_packet_lock = threading.Lock()
+    
+        # 0.0 / None means the heartbeat loop has not fired yet.
+        self._last_heartbeat_ts: float = 0.0
+        self._last_heartbeat_wall_time: datetime | None = None  # human-readable twin
+
+
+        self._STALL_TIMEOUT = _STALL_TIMEOUT
 
         self._ifaces: list = []   # stored at start_capture for restart use
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def start_capture(self, ifaces: list):
         self._ifaces = ifaces
         self._restart_count = 0
+        self._start_ts = time.monotonic()
         log.info("Capture started on interfaces: %s", ", ".join(str(i) for i in ifaces))
 
         self._launch_capture_thread()
@@ -126,10 +120,6 @@ class PacketCapture:
         if hasattr(self, "_capture_thread"):
             self._capture_thread.join(timeout=5)
         log.info("Packet capture stopped.")
-
-    # ------------------------------------------------------------------
-    # Internal — capture thread lifecycle
-    # ------------------------------------------------------------------
 
     def _build_cmd(self) -> list[str]:
         cmd = ["tshark"]
@@ -350,6 +340,9 @@ class PacketCapture:
         def _heartbeat():
             while not self._stop_event.is_set():
                 time.sleep(_HEARTBEAT_INTERVAL)
+                # Record when this UI tick fired (monotonic + wall-clock twin).
+                self._last_heartbeat_ts = time.monotonic()
+                self._last_heartbeat_wall_time = datetime.now()
                 eq = self.engine_queue.qsize()
                 cq = self.collector_queue.qsize()
                 log.info(
@@ -359,3 +352,34 @@ class PacketCapture:
 
         t = threading.Thread(target=_heartbeat, daemon=True, name="Heartbeat")
         t.start()
+
+    @property
+    def last_heartbeat_ts(self) -> float:
+        """
+        Monotonic timestamp of the most recent heartbeat tick.
+        Returns 0.0 until the first heartbeat fires.
+        """
+        return self._last_heartbeat_ts
+
+    @property
+    def last_heartbeat_wall_time(self) -> datetime | None:
+        """
+        Wall-clock datetime of the most recent heartbeat tick, or None if not yet started.
+        Kept in sync with ``last_heartbeat_ts``; formatting is left to callers.
+        """
+        return self._last_heartbeat_wall_time
+
+    @property
+    def stall_detected(self) -> bool:
+        """
+        Return True when no packet has arrived within the stall timeout window.
+        """
+        with self._last_packet_lock:
+            last = self._last_packet_ts
+            
+        if last == 0.0:
+            if hasattr(self, "_start_ts"):
+                return (time.monotonic() - self._start_ts) >= self._STALL_TIMEOUT
+            return False
+            
+        return (time.monotonic() - last) >= self._STALL_TIMEOUT
