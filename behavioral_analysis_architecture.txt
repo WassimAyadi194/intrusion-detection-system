@@ -1,0 +1,103 @@
+Behavioral Analysis Architecture Documentation
+==============================================
+
+This document details the theory, syntax, and functional interactions of the files responsible for the behavioral analysis and anomaly detection pipeline.
+
+1. Time-Window Aggregation & Metrics Generation (PBI-3 & PBI-4)
+---------------------------------------------------------------
+File: `baseline/data_collector.py`
+Package: `baseline`
+
+* Theory: 
+  This module serves as the ingestion point for live network traffic. Instead of analyzing packets individually, it aggregates them over a fixed tumbling time window (e.g., 10 seconds). During this window, it generates behavioral metrics for each source IP, specifically: SYN packet count, number of unique destination IPs, number of unique destination ports, and total packet count.
+
+* File Contents & Implementation Details: 
+  - `_make_host_entry()`: A helper function that initializes the default dictionary structure for a host, setting counters to 0 and providing empty `set()` objects for unique ports and destinations.
+  - `LiveMetricsCollector` class: The core class that receives parsed packets from a capture queue via its `run()` loop. 
+  - Key properties include `self.host_data` (a `collections.defaultdict` tracking the current window's stats), and `self.window_start` (tracking the timing for the tumbling window).
+  - `process_packet(pkt)`: Inspects incoming packets (filtering for IP and TCP layers), extracting `src`, `dst`, `dport`, and `flags`. It updates the counters for the source IP, identifying SYN flags using bitwise operations (`flags & 0x02`).
+  - `flush_window()`: Triggered when the time window expires. It performs an atomic swap (`old_data = self.host_data; self.host_data = defaultdict(...)`) to safely process the collected data without dropping new packets that arrive during database I/O. It converts the sets into integer counts and executes an `INSERT INTO live_metrics` SQL statement to persist the snapshot. Finally, it forwards the stats to `engine.process_anomaly()`.
+  - `_prune_old_metrics()`: Runs at startup to delete entries older than `LIVE_METRICS_RETENTION_HOURS` to prevent database bloat over time.
+
+* Syntax:
+  - Files: data_collector.py
+  - Dictionary Initialization: Uses `def _make_host_entry() -> dict:` to return a fresh dictionary with `syn_count: 0`, `unique_ports: set()`, etc.
+  - Bitmasking: `flags & 0x02` checks specifically for the SYN bit in the TCP header flags.
+  - SQL Execution: Uses `cursor.execute("""INSERT INTO live_metrics ... VALUES (?, ...)""", (...))` to securely parameterize database writes and prevent SQL injection.
+  - Atomic Swap: `old_data = self.host_data; self.host_data = defaultdict(_make_host_entry)` allows immediate resetting of the collector while the old data is safely persisted.
+
+
+2. Baseline Profile Storage & Evolution Logic (PBI-5 & PBI-6)
+-------------------------------------------------------------
+File: `baseline/baseline_trainer.py`
+Package: `baseline`
+
+* Theory: 
+  This module is responsible for learning what constitutes "normal" network behavior. It fetches historical windows from the database and computes statistical averages (mean) and standard deviations for each metric. To adapt to gradual network changes without being skewed by sudden spikes, it employs an Exponential Moving Average (EMA). This allows the baseline to evolve slowly over time.
+
+* File Contents & Implementation Details: 
+  - `MIN_SAMPLES`: A constant (set to 10) dictating the minimum number of collected windows required before a host's baseline can be trained, preventing statistical noise.
+  - `compute_stddev(values, mean)`: A mathematical helper calculating the population standard deviation for a given list of metric values.
+  - `_ema(old, new, alpha)`: A helper applying the Exponential Moving Average formula: `(1.0 - alpha) * old + alpha * new`. This acts as the core mathematical logic for baseline evolution (PBI-6).
+  - `train_baseline(host_ip=None)`: The primary function. It connects to the database and fetches the raw `live_metrics` data for all hosts (or a specific host).
+  - It iterates over each host, verifying if `MIN_SAMPLES` is met. If so, it computes fresh averages and standard deviations for SYN counts, ports, destinations, and packet counts.
+  - If a baseline already exists for a host, it uses `_ema()` to blend the new metrics with the historical ones. If not, it uses the fresh metrics directly (referred to as a "Cold Start").
+  - The function finalizes by executing a SQLite UPSERT (`ON CONFLICT(host_ip) DO UPDATE SET ...`) to save the updated profile back into the `baseline` table.
+
+* Syntax:
+  - Files: baseline_trainer.py
+  - Standard Deviation: `variance = sum((v - mean) ** 2 for v in values) / len(values)` calculates the variance before returning `math.sqrt(variance)`.
+  - EMA Logic: `return (1.0 - alpha) * old + alpha * new` applies the Exponential Moving Average mathematical formula natively in Python.
+  - UPSERT Query: The SQL string `ON CONFLICT(host_ip) DO UPDATE SET avg_syn = excluded.avg_syn...` natively handles both INSERT for new hosts and UPDATE for existing ones without requiring two separate SQL calls.
+  - ISO Timestamps: `datetime.now(timezone.utc).isoformat()` ensures time consistency when writing the `last_updated` column to the database.
+
+
+3. Anomaly Detection Module (PBI-8)
+-----------------------------------
+File: `baseline/anomaly_detector.py`
+Package: `baseline`
+
+* Theory: 
+  This module acts as the evaluation engine. It compares real-time metrics generated by the data collector against the established historical baseline for that specific host. It uses Z-scores (the number of standard deviations a value is from the mean) to quantify deviation. If the deviation exceeds a defined threshold, it flags the behavior as an anomaly.
+
+* File Contents & Implementation Details: 
+  - `Z_THRESHOLD` (2.5) and `STD_FLOOR` (0.1): Constants defining how many standard deviations from the mean constitute an anomaly, and a floor value to prevent division by zero for perfectly stable baselines (where std deviation is 0).
+  - `SEVERITY_LEVELS`: A mapping of Z-score thresholds to severity labels (CRITICAL for >= 4.0, HIGH for >= 3.0, MEDIUM for >= 2.5).
+  - `AnomalyDetector` class: Orchestrates the detection. Uses `_baseline_cache` and `_cache_ttl` to keep recent baselines in memory, significantly optimizing read performance.
+  - `_load_baseline(host_ip)`: Handles retrieving the baseline from the memory cache or fetching it via SQL (`SELECT * FROM baseline`) if the TTL has expired.
+  - `_METRIC_DESCRIPTIONS`: A dictionary mapping metrics to human-readable string templates (e.g., "Port scanning behavior from {host}").
+  - `_check_metric(...)`: The core mathematical evaluation. Computes `z = (value - avg) / effective_std`. If `abs(z)` exceeds `Z_THRESHOLD`, it constructs a structured alert dictionary containing the unified schema (`src`, `type`, `metric`, `severity`, `message`, `timestamp`) and raw baseline metrics.
+  - `analyze(...)`: Called by the engine on every window flush. It loads the baseline, runs `_check_metric` across all 4 tracked data points (SYN, ports, destinations, total packets), and aggregates the results into a list of alerts.
+
+* Syntax:
+  - Files: anomaly_detector.py
+  - Severity Resolution: Uses a list of tuples `SEVERITY_LEVELS = [(4.0, "CRITICAL"), ...]` and iterates `for threshold, label in SEVERITY_LEVELS: if abs(z_score) >= threshold: return label`.
+  - Memory Caching: `if now - self._cache_ts[host_ip] < self._cache_ttl:` checks against the Unix timestamp to decide whether to hit the SQLite database or use the in-memory dictionary.
+  - Z-Score Formula: `z = (value - avg) / effective_std` implements the standard score calculation, using `effective_std = max(std, STD_FLOOR)` to cleanly handle perfect baselines.
+  - Lambda Functions: The `_METRIC_DESCRIPTIONS` dictionary uses inline lambda functions like `lambda host, val, avg: f"..."` to dynamically generate strings injected with anomalous data.
+
+
+4. Database Schema & Persistence (PBI-5 & PBI-14)
+-------------------------------------------------
+File: `database/init_db.py`
+Package: `database`
+
+* Theory: 
+  This module handles the schema definitions and persistence foundation for the entire pipeline. It ensures the SQLite database is structured to store raw metrics, computed baselines, and the permanent alert history log.
+
+* File Contents & Implementation Details: 
+  - `initialize_database()`: A singular initialization function triggered when the application starts.
+  - `PRAGMA journal_mode=WAL`: Explicitly sets the SQLite database to Write-Ahead Logging mode. This is crucial for avoiding database locks, allowing the `LiveMetricsCollector` to write metrics while the `AnomalyDetector` or `baseline_trainer` read from the database concurrently.
+  - Table Creation Statements: Contains multi-line `CREATE TABLE IF NOT EXISTS` queries for:
+    - `baseline`: Stores the EMA-smoothed statistical averages (`avg_syn`, `std_syn`, etc.) and a `last_updated` timestamp.
+    - `live_metrics`: Stores the raw 10-second snapshots generated by the collector.
+    - `alerts`: Stores generated anomaly events with their metadata (`severity`, `description`, `baseline_avg`), serving as the permanent alert history (PBI-14).
+    - `logs`: Stores application-level debugging logs.
+  - Indexing logic: Implements `CREATE INDEX` on `live_metrics(host_ip, timestamp)` and `live_metrics(timestamp)` to optimize sliding window queries and startup pruning operations.
+  - Migration blocks: Contains safe `ALTER TABLE` blocks wrapped in `try/except sqlite3.OperationalError` to dynamically add new columns (like `novelty` or `packet_count`) to existing tables without breaking backward compatibility for older databases.
+
+* Syntax:
+  - Files: init_db.py
+  - Performance Pragma: `conn.execute("PRAGMA journal_mode=WAL")` sets the write-ahead logging feature at the connection level to improve concurrent I/O.
+  - Table Creation: `CREATE TABLE IF NOT EXISTS baseline (...)` uses standard SQLite DDL to enforce the schema statically while avoiding errors if it already exists.
+  - Try-Except Migrations: `try: cursor.execute("ALTER TABLE ...") except sqlite3.OperationalError: pass` acts as a rudimentary migration system by attempting to add new columns and silently suppressing errors if they already exist.
