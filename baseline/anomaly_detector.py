@@ -8,18 +8,30 @@ from config import DB_NAME, DB_MAX_RETRIES, DB_RETRY_DELAY
 log = get_logger(__name__)
 
 # How many standard deviations from the mean triggers an alert.
-# 2.5 catches clear outliers while avoiding excessive false positives.
 Z_THRESHOLD = 2.5
 
-# If std is 0 (perfectly stable baseline), use this floor so a nonzero
-# value still triggers an alert rather than dividing by zero.
-STD_FLOOR = 0.1
+# Floor applied to std before Z-score division.
+STD_FLOOR = 1.0
 
 SEVERITY_LEVELS = [
     (4.0, "CRITICAL"),
     (3.0, "HIGH"),
-    (2.5, "MEDIUM"),
+    (2.5, "MEDIUM"),  # only reachable if Z_THRESHOLD is later lowered
 ]
+
+_MIN_DELTAS: dict[str, float] = {
+    "syn_count":           20,   
+    "unique_ports":        10,  
+    "unique_destinations":  10,   
+    "packet_count":        1000,  
+}
+
+
+_MIN_BASELINE_SAMPLES: int = 10
+
+# Cooldown (seconds) per (host_ip, metric) after an alert fires.
+# Prevents the same burst straddling two 10-second windows from double-alerting.
+_ALERT_COOLDOWN = 30  # seconds
 
 
 def _severity(z_score: float) -> str:
@@ -34,6 +46,8 @@ class AnomalyDetector:
         self._baseline_cache: dict[str, dict] = {}
         self._cache_ttl = 300  # seconds before re-reading from DB
         self._cache_ts: dict[str, float] = {}
+        # Tracks the last alert time per (host_ip, metric) for cooldown enforcement.
+        self._last_alert_ts: dict[tuple[str, str], float] = {}
         self._check_baseline_populated()
 
     @staticmethod
@@ -128,18 +142,37 @@ class AnomalyDetector:
         timestamp: int,
     ) -> dict | None:
         """
-        Computes the Z-score for one metric. Returns a unified alert dict if the
-        score exceeds Z_THRESHOLD, otherwise None.
+        Computes the Z-score for one metric. Returns a unified alert dict if:
+          1. The Z-score exceeds Z_THRESHOLD, AND
+          2. The absolute delta (value - avg) exceeds the per-metric _MIN_DELTAS
+             floor, AND
+          3. No alert for this (host, metric) pair fired within _ALERT_COOLDOWN
+             seconds.
 
-        Uses only the unified AlertGate schema (src, type, metric, severity,
-        message, timestamp) plus the numeric baseline fields needed for DB
-        persistence. No duplicate keys.
+        Conditions 2 and 3 are the primary fix for tab-refresh false positives:
+        - Condition 2 prevents large Z-scores on near-zero baselines from alerting
+          on trivially small absolute changes (e.g. 2 → 8 SYNs).
+        - Condition 3 prevents a single burst straddling two 10-second windows
+          from generating duplicate alerts.
         """
         effective_std = max(std, STD_FLOOR)
         z = (value - avg) / effective_std
 
         if abs(z) < Z_THRESHOLD:
             return None
+
+        # Absolute-delta guard — applied to every metric, not just packet_count.
+        min_delta = _MIN_DELTAS.get(metric, 10)
+        if abs(value - avg) < min_delta:
+            return None
+
+        # Cooldown guard — suppress repeated alerts for the same (host, metric).
+        cooldown_key = (host_ip, metric)
+        now = float(timestamp)
+        last = self._last_alert_ts.get(cooldown_key, 0.0)
+        if now - last < _ALERT_COOLDOWN:
+            return None
+        self._last_alert_ts[cooldown_key] = now
 
         severity = _severity(z)
 
@@ -174,6 +207,12 @@ class AnomalyDetector:
     ) -> list[dict]:
         baseline = self._load_baseline(host_ip)
         if baseline is None:
+            return []
+
+        # Reject baselines built on too few observations. A host seen only a
+        # handful of times during training will have near-zero means/stds, so
+        # any normal burst produces enormous Z-scores and fires false positives.
+        if baseline.get("sample_count", 0) < _MIN_BASELINE_SAMPLES:
             return []
 
         timestamp = int(time.time())

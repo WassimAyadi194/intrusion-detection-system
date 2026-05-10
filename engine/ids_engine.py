@@ -106,9 +106,9 @@ class DetectionEngine:
     def __init__(self, packet_capture=None, anomaly_detector=None, alert_queue=None, collector=None):
         baseline_hosts = _load_baseline_hosts()
 
-        self.port_scan          = PortScanDetector()
         self.connection_tracker = ConnectionTracker(baseline_hosts=baseline_hosts)
-        self.packet_threshold   = PacketThresholdDetector()
+        self.port_scan          = PortScanDetector(self.connection_tracker)
+        self.packet_threshold   = PacketThresholdDetector(self.connection_tracker)
         self.packet_capture     = packet_capture
         self.anomaly_detector   = anomaly_detector
         self._alert_queue       = alert_queue
@@ -208,7 +208,7 @@ class DetectionEngine:
             anomaly_level = self.alert_gate.worst_severity_since(host_ip, since)
     
             # Novelty — pure function, no side effects
-            novelty = self.connection_tracker._classify_novelty(host_ip)
+            novelty = self.connection_tracker._classify_novelty(host_ip, now)
     
             anomaly_count = self.alert_gate.count_host_since(host_ip, now - 2)
 

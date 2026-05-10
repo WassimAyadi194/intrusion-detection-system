@@ -104,6 +104,13 @@ def initialize_database():
     except sqlite3.OperationalError:
         pass  # already exists
 
+    try:
+        cursor.execute(
+            "ALTER TABLE baseline ADD COLUMN sample_count INTEGER DEFAULT 0;"
+        )
+    except sqlite3.OperationalError:
+        pass  # already exists
+
     # avg/std_packet_count columns in baseline
     for col in ("avg_packet_count REAL", "std_packet_count REAL"):
         try:

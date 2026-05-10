@@ -37,20 +37,7 @@ def _ema(old: float, new: float, alpha: float = BASELINE_EMA_ALPHA) -> float:
 
 # Main trainer
 def train_baseline(host_ip: str | None = None):
-    """
-    Compute fresh statistics from live_metrics and persist them to the
-    baseline table.
 
-    Behaviour when a prior baseline row exists for a host
-    ─────────────────────────────────────────────────────
-    Each statistic is blended with the stored value via EMA (see _ema()).
-    This means the baseline retains memory across retraining runs and will
-    not be thrown off by a single unusual collection window.
-
-    Behaviour when no prior row exists
-    ───────────────────────────────────
-    Statistics are inserted as-is (normal cold-start initialisation).
-    """
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -126,6 +113,11 @@ def train_baseline(host_ip: str | None = None):
             avg_pkts  = _ema(existing["avg_packet_count"] or 0.0, new_avg_pkts)
             std_pkts  = _ema(existing["std_packet_count"] or 0.0, new_std_pkts)
 
+            # Accumulate total observations across all training runs so that
+            # the _MIN_BASELINE_SAMPLES guard in anomaly_detector.py reflects
+            # the full history, not just the most-recent batch.
+            sample_count = (existing["sample_count"] or 0) + len(rows)
+
             mode = "EMA"
         else:
             # ── Cold start: no prior record — use fresh values directly ────────
@@ -133,6 +125,8 @@ def train_baseline(host_ip: str | None = None):
             avg_ports, std_ports = new_avg_ports, new_std_ports
             avg_dests, std_dests = new_avg_dests, new_std_dests
             avg_pkts,  std_pkts  = new_avg_pkts,  new_std_pkts
+
+            sample_count = len(rows)
 
             mode = "INIT"
 
@@ -155,8 +149,9 @@ def train_baseline(host_ip: str | None = None):
                 avg_unique_ports, std_unique_ports,
                 avg_unique_destinations, std_unique_destinations,
                 avg_packet_count, std_packet_count,
+                sample_count,
                 last_updated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(host_ip) DO UPDATE SET
                 avg_syn                  = excluded.avg_syn,
                 std_syn                  = excluded.std_syn,
@@ -166,6 +161,7 @@ def train_baseline(host_ip: str | None = None):
                 std_unique_destinations  = excluded.std_unique_destinations,
                 avg_packet_count         = excluded.avg_packet_count,
                 std_packet_count         = excluded.std_packet_count,
+                sample_count             = excluded.sample_count,
                 last_updated             = excluded.last_updated
         """, (
             ip,
@@ -173,11 +169,12 @@ def train_baseline(host_ip: str | None = None):
             avg_ports, std_ports,
             avg_dests, std_dests,
             avg_pkts,  std_pkts,
+            sample_count,
             datetime.now(timezone.utc).isoformat()
         ))
 
         print(
-            f"[{mode}] {ip} — {len(rows)} samples | "
+            f"[{mode}] {ip} — {len(rows)} new samples (total: {sample_count}) | "
             f"syn={avg_syn:.1f}±{std_syn:.1f}  "
             f"ports={avg_ports:.1f}±{std_ports:.1f}  "
             f"dests={avg_dests:.1f}±{std_dests:.1f}  "
