@@ -5,10 +5,12 @@ All widget logic lives in frontend/widgets/.
 """
 
 import queue
-import threading
+
+from engine.launcher import start_ids as _start_ids, stop_ids as _stop_ids
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve, QRect
+from PySide6.QtGui import QResizeEvent, QShowEvent
 
 from frontend.theme import SPACING, LAYOUT_SIZES
 from frontend.widgets.shared.helpers import _lbl
@@ -19,69 +21,18 @@ from frontend.widgets.kpi.kpi_tile import KpiTile
 from frontend.widgets.kpi.kpi_refresher import KpiRefresher
 from frontend.widgets.bottom_bar import BottomBar
 from frontend.widgets.bottom_bar_refresher import BottomBarRefresher
-
-def _start_ids(alert_queue: queue.Queue) -> dict:
-    """Start the full IDS stack and return a handle dict."""
-    from database.init_db import initialize_database
-    from capturing.interface_utils import get_relevant_interfaces
-    from capturing.packet_capture import PacketCapture
-    from engine.ids_engine import DetectionEngine
-    from baseline.anomaly_detector import AnomalyDetector
-    from baseline.data_collector import LiveMetricsCollector
-
-    initialize_database()
-
-    ifaces = get_relevant_interfaces()
-    packet_capture = PacketCapture()
-    iface_names = [iface["index"] for iface in ifaces]
-    packet_capture.start_capture(iface_names)
-
-    anomaly_detector = AnomalyDetector()
-
-    engine = DetectionEngine(
-        packet_capture=packet_capture,
-        anomaly_detector=anomaly_detector,
-        alert_queue=alert_queue,
-    )
-
-    metrics_collector = LiveMetricsCollector(packet_capture, engine)
-
-    engine.collector = metrics_collector
-
-    engine_thread = threading.Thread(
-        target=engine.run, daemon=True, name="DetectionEngine"
-    )
-    engine_thread.start()
-
-    collector_thread = threading.Thread(
-        target=metrics_collector.run, daemon=True, name="MetricsCollector"
-    )
-    collector_thread.start()
-
-    return {
-        "engine":            engine,
-        "packet_capture":    packet_capture,
-        "metrics_collector": metrics_collector,
-        "collector_thread":  collector_thread,
-    }
-
-
-def _stop_ids(ids: dict) -> None:
-    """Graceful shutdown of a running IDS handle dict."""
-    ids["metrics_collector"].stop()
-    ids["collector_thread"].join(timeout=5)
-    ids["packet_capture"].stop()
+from frontend.widgets.shared.export_dialog import ExportDialog
+from reports.csv_generator import CSVReportGenerator
 
 
 class DashboardPage(QWidget):
 
-    # Static tile definitions: (title, unit, value_name, snapshot_key)
-    # snapshot_key maps to the corresponding key in kpi_snapshot().
-    # Queue Depth is a special case — it combines two snapshot keys.
+    engine_changed = Signal(object)
+
     _KPI_DEFS = [
         ("Alerts (60 s)", "events",  "kpiValueRed",    "alerts_60s"),
         ("Active Hosts",  "online",  "kpiValueAccent",  "active_hosts"),
-        ("Queue Depth",   "pkts",    "kpiValueAmber",   "_queue_depth"),  # computed
+        ("Queue Depth",   "pkts",    "kpiValueAmber",   "_queue_depth"),
         ("Capture State", "",        "kpiValueGreen",   "capture_state"),
     ]
 
@@ -92,9 +43,6 @@ class DashboardPage(QWidget):
         self._alert_queue = alert_queue
         self._log_queue = log_queue
         self._ids_running = engine is not None
-        # _ids_handle is populated when DashboardPage owns the IDS lifecycle
-        # (i.e. after the first Stop/Start or Restart cycle). Before that,
-        # app.py owns the handle; we track running state via _ids_running only.
         self._ids_handle: dict | None = None
 
         root = QVBoxLayout(self)
@@ -105,6 +53,7 @@ class DashboardPage(QWidget):
 
         root.addWidget(self._build_page_header())
 
+        # Use a plain QWidget for content — LogsPanel floats over DashboardPage
         content = QWidget()
         content.setObjectName("dashContent")
         cl = QVBoxLayout(content)
@@ -122,13 +71,22 @@ class DashboardPage(QWidget):
         center.addWidget(self._host_metrics, stretch=1)
         cl.addLayout(center, stretch=1)
 
-        cl.addWidget(LogsPanel(log_queue=self._log_queue))
+        # Reserve space at the bottom of the content area equal to the
+        # logs-toggle button height.  The LogsPanel floats *over* this gap,
+        # so AlertFeed / HostMetrics never render beneath the button.
+        cl.addSpacing(LAYOUT_SIZES["panel_header_h"])
+
+        # LogsPanel is a direct child of DashboardPage — NOT in any layout.
+        # It floats freely; its geometry is managed by _reposition_logs / _toggle_logs.
+        self._logs_expanded = False
+        self._logs_anim: QPropertyAnimation | None = None
+        self._logs_panel = LogsPanel(log_queue=self._log_queue, parent=self)
+        self._logs_panel.panel_toggled.connect(self._toggle_logs)
 
         root.addWidget(content, stretch=1)
         self._bottom_bar = BottomBar()
         root.addWidget(self._bottom_bar)
 
-        # Start live KPI polling only when a real engine is present.
         self._refresher = KpiRefresher(self._engine, interval_ms=1000, parent=self)
         self._refresher.refreshed.connect(self._update_kpis)
         if self._engine is not None:
@@ -139,6 +97,64 @@ class DashboardPage(QWidget):
         self._bar_refresher.signal.connect(self._update_bottom_bar)
         if self._engine is not None:
             self._bar_refresher.start()
+
+    # ------------------------------------------------------------------
+    # Floating LogsPanel positioning
+    # ------------------------------------------------------------------
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        # Defer one tick so the layout has finished computing geometry
+        # before we read self._bottom_bar.pos().
+        QTimer.singleShot(0, self._reposition_logs)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._reposition_logs()
+
+    def _reposition_logs(self) -> None:
+        """Pin the LogsPanel so its toggle button sits just above the BottomBar."""
+        bar_y = self._bottom_bar.pos().y()
+        if bar_y <= 0:
+            return  # layout not ready yet — showEvent will retry
+        w = self.width()
+        toggle_h = LAYOUT_SIZES["panel_header_h"]
+        panel_h  = LAYOUT_SIZES["logs_panel_h"] + toggle_h
+        # When collapsed only the toggle is visible (height = toggle_h).
+        # When expanded the full panel is visible (height = panel_h).
+        h = panel_h if self._logs_expanded else toggle_h
+        self._logs_panel.setGeometry(0, bar_y - h, w, h)
+        self._logs_panel.raise_()
+
+    def _toggle_logs(self, expanding: bool) -> None:
+        """Animate the LogsPanel geometry when the user clicks the toggle button."""
+        bar_y = self._bottom_bar.pos().y()
+        w = self.width()
+        toggle_h = LAYOUT_SIZES["panel_header_h"]
+        panel_h  = LAYOUT_SIZES["logs_panel_h"] + toggle_h
+
+        self._logs_expanded = expanding
+
+        start_rect = self._logs_panel.geometry()
+        if expanding:
+            end_rect = QRect(0, bar_y - panel_h, w, panel_h)
+        else:
+            end_rect = QRect(0, bar_y - toggle_h, w, toggle_h)
+
+        if self._logs_anim is not None:
+            self._logs_anim.stop()
+
+        anim = QPropertyAnimation(self._logs_panel, b"geometry", self)
+        anim.setStartValue(start_rect)
+        anim.setEndValue(end_rect)
+        anim.setDuration(220)
+        anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        if not expanding:
+            anim.finished.connect(self._logs_panel.on_collapse_finished)
+        anim.start()
+        self._logs_anim = anim
+        self._logs_panel.raise_()
+
     # ------------------------------------------------------------------
     # Page header
     # ------------------------------------------------------------------
@@ -149,17 +165,31 @@ class DashboardPage(QWidget):
         header.setFixedHeight(LAYOUT_SIZES["page_header_h"])
         row = QHBoxLayout(header)
         row.setContentsMargins(
-            SPACING["xxl"], SPACING["none"], SPACING["xxl"], SPACING["none"]
+            SPACING["xxl"], SPACING["xxl"], SPACING["xxl"], SPACING["lg"]
         )
         row.addWidget(_lbl("DASHBOARD", "pageHeaderTitle"))
         row.addStretch()
+
+        self._export_btn = QPushButton("Export CSV")
+        self._export_btn.setObjectName("secondaryBtn")
+        self._export_btn.clicked.connect(self._show_export_dialog)
+        row.addWidget(self._export_btn)
+
         return header
 
+    def _show_export_dialog(self):
+        from PySide6.QtWidgets import QMessageBox
+        dialog = ExportDialog(self)
+        if dialog.exec() == ExportDialog.DialogCode.Accepted:
+            tables = dialog.get_selected_tables()
+            if tables:
+                generator = CSVReportGenerator()
+                results = generator.generate_selected(tables)
+                if results:
+                    msg = "\n".join(results)
+                    QMessageBox.information(self, "Export Results", msg)
+
     def _build_kpi_strip(self) -> QHBoxLayout:
-        """
-        Build the four KPI tiles.  The Capture State tile gets two control
-        buttons (Stop/Start and Restart) placed immediately to its right.
-        """
         strip = QHBoxLayout()
         strip.setSpacing(SPACING["md"])
 
@@ -171,18 +201,12 @@ class DashboardPage(QWidget):
             self._kpi_tiles.append(tile)
             strip.addWidget(tile)
 
-            # Inject control buttons immediately after the Capture State tile
-            # (last entry in _KPI_DEFS).
             if i == len(self._KPI_DEFS) - 1:
                 strip.addLayout(self._build_control_buttons())
 
         return strip
 
     def _build_control_buttons(self) -> QVBoxLayout:
-        """
-        Return a compact vertical layout holding the Stop/Start and Restart
-        buttons, sized to fit within the KPI strip height.
-        """
         btn_layout = QVBoxLayout()
         btn_layout.setSpacing(SPACING["xs"])
         btn_layout.setContentsMargins(
@@ -209,21 +233,17 @@ class DashboardPage(QWidget):
     # ------------------------------------------------------------------
 
     def _toggle_ids(self) -> None:
-        """Stop a running IDS, or start a stopped one."""
         if self._ids_running:
             self._do_stop()
         else:
             self._do_start()
 
     def _restart_ids(self) -> None:
-        """Stop (if running) then start fresh."""
         if self._ids_running:
             self._do_stop()
         self._do_start()
 
     def _do_stop(self) -> None:
-        """Tear down the IDS stack and update UI to reflect stopped state."""
-        # Stop refreshers first so they don't read a dying engine.
         self._refresher.stop()
         self._refresher.set_engine(None)
         self._bar_refresher.stop()
@@ -241,6 +261,7 @@ class DashboardPage(QWidget):
 
         self._engine = None
         self._ids_running = False
+        self.engine_changed.emit(None)
 
         self._toggle_btn.setText("Start")
         self._toggle_btn.setObjectName("idsStartBtn")
@@ -250,13 +271,12 @@ class DashboardPage(QWidget):
         self._set_kpis_stopped()
 
     def _do_start(self) -> None:
-        """Launch a fresh IDS stack and wire it into the existing UI."""
         handle = _start_ids(self._alert_queue)
         self._ids_handle = handle
         self._engine = handle["engine"]
         self._ids_running = True
+        self.engine_changed.emit(self._engine)
 
-        # Point both refreshers at the new engine and resume polling.
         self._refresher.set_engine(self._engine)
         self._refresher.start()
         self._bar_refresher.set_packet_capture(self._engine.packet_capture)
@@ -269,7 +289,6 @@ class DashboardPage(QWidget):
         self._toggle_btn.style().polish(self._toggle_btn)
 
     def _set_kpis_stopped(self) -> None:
-        """Push placeholder values into all tiles when the engine is stopped."""
         for tile, (_, _, _, key) in zip(self._kpi_tiles, self._KPI_DEFS):
             if key == "capture_state":
                 tile.set_value("STOPPED")
@@ -279,14 +298,12 @@ class DashboardPage(QWidget):
                 tile.set_value("—")
 
     def _update_bottom_bar(self, status: dict) -> None:
-        """Unpack the dict emitted by BottomBarRefresher and forward to the bar."""
         self._bottom_bar.update_status(
             last_tick=status.get("last_tick", "—"),
             stall=bool(status.get("stall", False)),
         )
 
     def _update_kpis(self, snapshot: dict) -> None:
-        """Receive a fresh snapshot dict and push each value into its tile."""
         for tile, (_, _, _, key) in zip(self._kpi_tiles, self._KPI_DEFS):
             if key == "_queue_depth":
                 eq = snapshot.get("engine_q", 0)

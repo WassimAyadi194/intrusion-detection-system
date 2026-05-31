@@ -13,7 +13,7 @@ import os
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QMessageBox, QComboBox,
+    QPushButton, QMessageBox, QComboBox, QMenu,
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 
@@ -42,7 +42,8 @@ _SORT_OPTIONS: list[tuple[str, str]] = [
     ("CONNECTIONS", "active_connections"),
     ("ANOMALY/S",   "anomaly_count"),
     ("SEVERITY",    "anomaly_level"),
-    ("KNOWN",       "novelty"),
+    ("NOVELTY",     "novelty"),
+    ("ACTIVITY",    "activity"),
 ]
 
 # Numeric rank for SEVERITY — higher rank = shown first (descending)
@@ -56,12 +57,11 @@ _SEVERITY_RANK: dict[str, int] = {
     "":         0,
 }
 
-# Novelty sort: KNOWN > RECURRING > NEW > LOOPBACK
+# Novelty sort: KNOWN > RECURRING > NEW  (loopback hosts are filtered out)
 _NOVELTY_RANK: dict[str, int] = {
     "KNOWN":     3,
     "RECURRING": 2,
     "NEW":       1,
-    "LOOPBACK":  0,
 }
 
 
@@ -80,11 +80,18 @@ class _RetrainWorker(QThread):
 
     done: Signal = Signal(bool, str)
 
+    def __init__(self, only_existing: bool = False, parent=None):
+        super().__init__(parent)
+        self.only_existing = only_existing
+
     def run(self) -> None:
         _log.info("Baseline retraining started.")
+        cmd = [sys.executable, "-m", "baseline.baseline_trainer"]
+        if self.only_existing:
+            cmd.append("--only-existing")
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "baseline.baseline_trainer"],
+                cmd,
                 capture_output=True,
                 text=True,
                 cwd=_PROJECT_ROOT,
@@ -131,7 +138,8 @@ def _build_display(data: dict) -> tuple[list[tuple[str, str]], str]:
         ("ANOMALY/S", str(anomaly_count)),
         ("SEVERITY",  anomaly_level),
     ]
-    return metrics, novelty
+    is_active = int(conns) > 0
+    return metrics, novelty, is_active
 
 
 def _sort_key(sort_field: str, data: dict):
@@ -149,8 +157,11 @@ def _sort_key(sort_field: str, data: dict):
         raw = (data.get("anomaly_level") or "").upper()
         return _SEVERITY_RANK.get(raw, 0)
     if sort_field == "novelty":
-        raw = (data.get("novelty") or "LOOPBACK").upper()
+        raw = (data.get("novelty") or "").upper()
         return _NOVELTY_RANK.get(raw, 0)
+    if sort_field == "activity":
+        # Active (connections > 0) → 1 sorts above inactive → 0
+        return int(int(data.get("active_connections", 0) or 0) > 0)
     return 0   # "none" — stable insertion order
 
 
@@ -218,7 +229,16 @@ class HostMetricsArea(QWidget):
         # ── Retrain Baseline button ────────────────────────────────────────
         self._retrain_btn = QPushButton("\u27f3  RETRAIN BASELINE")
         self._retrain_btn.setObjectName("retrainBaselineBtn")
-        self._retrain_btn.clicked.connect(self._on_retrain_clicked)
+        
+        # Add a dropdown menu for selecting retrain scope
+        menu = QMenu(self._retrain_btn)
+        action_all = menu.addAction("Include New IPs")
+        action_existing = menu.addAction("Only Existing Baseline IPs")
+        
+        action_all.triggered.connect(lambda: self._on_retrain_clicked(False))
+        action_existing.triggered.connect(lambda: self._on_retrain_clicked(True))
+        self._retrain_btn.setMenu(menu)
+
         outer.addWidget(self._retrain_btn)
 
         # Cooldown countdown
@@ -306,7 +326,7 @@ class HostMetricsArea(QWidget):
     # Retrain Baseline button
     # ------------------------------------------------------------------
 
-    def _on_retrain_clicked(self) -> None:
+    def _on_retrain_clicked(self, only_existing: bool = False) -> None:
         """Disable the button, start the cooldown timer, and launch the worker."""
         self._retrain_btn.setEnabled(False)
         self._retrain_remaining = _RETRAIN_COOLDOWN_S
@@ -315,7 +335,7 @@ class HostMetricsArea(QWidget):
         )
         self._retrain_timer.start()
 
-        self._worker = _RetrainWorker(parent=self)
+        self._worker = _RetrainWorker(only_existing=only_existing, parent=self)
         self._worker.done.connect(self._on_retrain_done)
         self._worker.start()
 
@@ -334,6 +354,10 @@ class HostMetricsArea(QWidget):
     def _on_retrain_done(self, success: bool, message: str) -> None:
         """Qt-safe slot — runs on the main thread via signal delivery."""
         if success:
+            if self._refresher._engine is not None:
+                self._baseline_cache = get_all_baselines()
+                if hasattr(self._refresher._engine, "reload_baseline_hosts"):
+                    self._refresher._engine.reload_baseline_hosts()
             QMessageBox.information(self, "Baseline Retraining", message)
         else:
             QMessageBox.warning(self, "Baseline Retraining Failed", message)
@@ -344,19 +368,25 @@ class HostMetricsArea(QWidget):
 
     def _on_snapshot(self, snapshot: dict) -> None:
         """Receive a fresh host_metrics_snapshot() payload and update the UI."""
-        # Incrementally update so departed/frozen hosts retain their sort state
+        # Incrementally update so departed/frozen hosts retain their sort state.
+        # Loopback addresses are excluded from the UI feed entirely.
         for k, v in snapshot.items():
-            self._last_snapshot[k] = v
+            if (data := v).get("novelty") == "loopback":
+                continue
+            self._last_snapshot[k] = data
 
-        # Create / update cards
+        # Create / update cards (loopback hosts already absent from snapshot loop)
         for host_ip, data in snapshot.items():
-            metrics, novelty = _build_display(data)
+            if data.get("novelty") == "loopback":
+                continue
+
+            metrics, novelty, is_active = _build_display(data)
             b_data = self._baseline_cache.get(host_ip, {})
 
             if host_ip in self._cards:
-                self._cards[host_ip].update(metrics, b_data, novelty)
+                self._cards[host_ip].update(metrics, b_data, novelty, is_active)
             else:
-                card = HostCard(host_ip, metrics, b_data, novelty)
+                card = HostCard(host_ip, metrics, b_data, novelty, is_active, parent=self._vbox.parentWidget())
                 self._cards[host_ip] = card
                 self._vbox.addWidget(card)   # order fixed up by _reorder_cards
 

@@ -1,11 +1,15 @@
 """
 frontend/widgets/logs/logs_panel.py
 
-Collapsible system logs panel – sits below the main panels.
+Collapsible system logs panel.
+
+Animation is handled externally by the parent (DashboardPage) via the
+panel_toggled signal — the parent animates this widget's geometry so the
+toggle button is always pinned to a fixed y-position regardless of state.
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton
-from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QTimer
+from PySide6.QtCore import QTimer, Qt, Signal
 
 from frontend.theme import SPACING, LAYOUT_SIZES
 from frontend.widgets.shared.helpers import _scrollable
@@ -19,15 +23,15 @@ _MAX_ENTRIES = 200
 
 
 class LogsPanel(QWidget):
-    """Collapsible system logs panel – sits below the main panels."""
 
-    _LOGS = [
+    panel_toggled = Signal(bool)   # True = expanding, False = collapsing
 
-    ]
+    _LOGS = []
 
     def __init__(self, log_queue=None, parent=None):
         super().__init__(parent)
         self._log_queue = log_queue
+        self._filter_text = ""
         self.setObjectName("logsPanel")
         self._expanded = False
 
@@ -37,17 +41,12 @@ class LogsPanel(QWidget):
         )
         outer.setSpacing(SPACING["none"])
 
-        # Toggle button
-        self._toggle_btn = QPushButton("▼  SHOW LOGS")
-        self._toggle_btn.setObjectName("logsToggleBtn")
-        self._toggle_btn.setFixedHeight(LAYOUT_SIZES["panel_header_h"])
-        self._toggle_btn.clicked.connect(self._toggle)
-        outer.addWidget(self._toggle_btn)
-
-        # Collapsible body (starts collapsed)
+        # ── Body ─────────────────────────────────────────────────────────────
+        # Placed FIRST (above toggle) so it grows upward as the panel expands.
+        # Starts hidden; the parent shows it before starting the expand anim.
         self._body = QWidget()
         self._body.setObjectName("logsBody")
-        self._body.setMaximumHeight(0)
+        self._body.hide()
 
         body_layout = QVBoxLayout(self._body)
         body_layout.setContentsMargins(
@@ -56,7 +55,7 @@ class LogsPanel(QWidget):
         body_layout.setSpacing(SPACING["none"])
 
         log_filter = FilterBar(placeholder="Search logs…")
-        log_filter.text_input.textChanged.connect(self._apply_filter)
+        log_filter.text_input.textChanged.connect(self._on_filter_changed)
         body_layout.addWidget(log_filter)
 
         inner = QWidget()
@@ -66,91 +65,102 @@ class LogsPanel(QWidget):
             SPACING["none"], SPACING["xs"], SPACING["none"], SPACING["xs"]
         )
         self._vbox.setSpacing(SPACING["none"])
+        self._vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._entries: list[LogEntry] = []
         for ts, lvl, module, msg in self._LOGS:
             entry = LogEntry(ts, lvl, f"[{module}] {msg}")
             self._entries.append(entry)
             self._vbox.addWidget(entry)
-        self._vbox.addStretch()
 
-        body_layout.addWidget(_scrollable(inner), stretch=1)
-        outer.addWidget(self._body)
+        self._scroll = _scrollable(inner)
+        self._scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        body_layout.addWidget(self._scroll, stretch=1)
 
-        # Start polling timer only when a queue is provided
+        # stretch=1 so body fills all space above the toggle button
+        outer.addWidget(self._body, stretch=1)
+
+        # ── Toggle button ─────────────────────────────────────────────────────
+        # Placed LAST so it always sits at the bottom of the widget.
+        self._toggle_btn = QPushButton("▼  SHOW LOGS")
+        self._toggle_btn.setObjectName("logsToggleBtn")
+        self._toggle_btn.setFixedHeight(LAYOUT_SIZES["panel_header_h"])
+        self._toggle_btn.clicked.connect(self._toggle)
+        outer.addWidget(self._toggle_btn)
+
+        # ── Log queue polling ─────────────────────────────────────────────────
         if self._log_queue is not None:
             self._poll_timer = QTimer(self)
-            self._poll_timer.setInterval(100)  # drain every 100 ms
+            self._poll_timer.setInterval(100)
             self._poll_timer.timeout.connect(self._drain_queue)
             self._poll_timer.start()
 
+    # ------------------------------------------------------------------
+    # Toggle state — text update only; geometry is handled by parent
+    # ------------------------------------------------------------------
+
+    def _toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._toggle_btn.setText(
+            "▲  HIDE LOGS" if self._expanded else "▼  SHOW LOGS"
+        )
+        if self._expanded:
+            # Show body before the expand animation starts so it is visible
+            # as soon as any height is given to it by the parent.
+            self._body.show()
+        self.panel_toggled.emit(self._expanded)
+
+    def on_collapse_finished(self) -> None:
+        """Called by DashboardPage when the collapse animation completes."""
+        self._body.hide()
+
+    # ------------------------------------------------------------------
+    # Queue drain
+    # ------------------------------------------------------------------
+
     def _drain_queue(self) -> None:
-        """
-        Pull up to _DRAIN_BATCH items from the queue per tick (non-blocking).
-        
-        It is non-blocking per item, not per loop.
-        The loop itself is bounded, not time-bounded
-        """
+        """Pull up to _DRAIN_BATCH items from the queue per tick (non-blocking)."""
         if self._log_queue is None:
             return
-
         drained = 0
         while drained < _DRAIN_BATCH:
             try:
                 ts, lvl, module, msg = self._log_queue.get_nowait()
             except queue.Empty:
                 break
-
-            # --- Prompt 2: enforce hard cap, evict oldest (tail) first ---
+            
+            if lvl == "CRITICAL" and "tshark" in msg.lower():
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.critical(self, "Engine Error", msg)
+                
             if len(self._entries) >= _MAX_ENTRIES:
-                oldest = self._entries.pop()          # O(1) — oldest is at tail
+                oldest = self._entries.pop()        # oldest is always at end of list
                 self._vbox.removeWidget(oldest)
+                oldest.hide()
                 oldest.deleteLater()
-
-            # --- Prompt 1: prepend so newest entry appears at the top ---
-            entry = LogEntry(ts, lvl, f"[{module}] {msg}")
-            self._entries.insert(0, entry)            # keep list in sync
-            self._vbox.insertWidget(0, entry)         # index 0 = visual top
+            entry = LogEntry(ts, lvl, f"[{module}] {msg}", parent=self._vbox.parentWidget())
+            self._entries.insert(0, entry)          # newest at front of list
+            self._vbox.insertWidget(0, entry)       # newest at top of layout
             drained += 1
 
         if drained > 0:
-            # Defer filter re-evaluation until Qt has flushed layout recalc
-            QTimer.singleShot(0, lambda: self._apply_filter(""))
+            QTimer.singleShot(0, self._apply_filter)
+        
+    # ------------------------------------------------------------------
+    # Filter
+    # ------------------------------------------------------------------
 
-    def _toggle(self) -> None:
-        self._expanded = not self._expanded
-        target = LAYOUT_SIZES["logs_panel_h"] if self._expanded else SPACING["none"]
-        self._toggle_btn.setText(
-            "▲  HIDE LOGS" if self._expanded else "▼  SHOW LOGS"
-        )
-
-        # Animate maximumHeight (cap) and minimumHeight (floor) together.
-        # Driving only maximumHeight is not enough: because LogsPanel has no
-        # stretch factor in the dashboard QVBoxLayout, Qt never allocates it
-        # extra room.  Raising minimumHeight forces the layout to reserve the
-        # full target height regardless of stretch.
-        anim_max = QPropertyAnimation(self._body, b"maximumHeight", self)
-        anim_max.setDuration(200)
-        anim_max.setStartValue(self._body.maximumHeight())
-        anim_max.setEndValue(target)
-        anim_max.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        anim_min = QPropertyAnimation(self._body, b"minimumHeight", self)
-        anim_min.setDuration(200)
-        anim_min.setStartValue(self._body.minimumHeight())
-        anim_min.setEndValue(target)
-        anim_min.setEasingCurve(QEasingCurve.Type.InOutQuad)
-
-        anim_max.start()
-        anim_min.start()
-        self._anim_max = anim_max  # keep references alive
-        self._anim_min = anim_min
-
-    def _apply_filter(self, text: str = "") -> None:
+    def _on_filter_changed(self, text: str) -> None:
+        """Called when the user types in the filter bar."""
         if not isinstance(text, str):
             text = ""
+        self._filter_text = text.strip().lower()
+        self._apply_filter()
 
-        text = text.strip().lower()
-
+    def _apply_filter(self) -> None:
+        """Show/hide entries based on the current filter text."""
+        text = self._filter_text
         for entry in self._entries:
             entry.setVisible((not text) or (text in entry._message.lower()))

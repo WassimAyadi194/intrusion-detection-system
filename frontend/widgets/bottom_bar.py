@@ -23,7 +23,7 @@ class BottomBar(QWidget):
         row.setContentsMargins(
             SPACING["xl"], SPACING["xs"], SPACING["xl"], SPACING["xs"]
         )
-        row.setSpacing(SPACING["xl"])
+        row.setSpacing(SPACING["sm"])
 
         row.addWidget(_lbl("●", "heartbeatPulse"))
 

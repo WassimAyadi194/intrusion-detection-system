@@ -1,62 +1,54 @@
 # detections/port_scan.py
 import time
 
+import config
 from baseline.baseline_reader import get_all_baselines
 from detections.connection_tracking import ConnectionTracker
 
 CLEANUP_INTERVAL = 10  # seconds between scan-table cleanup passes
 
-# Multiplier for the standard deviation term in the dynamic threshold formula.
-_K: float = 2
-
-# Absolute lower bounds — prevent thresholds from being unrealistically permissive
-# for hosts whose mean + k*std is below a sensible minimum.
-MIN_PORT_SCAN_LIMIT: int = 10
-MIN_HOST_SCAN_LIMIT: int = 10
-
 # How often (seconds) to refresh the baseline snapshot from the DB.
 _BASELINE_REFRESH_INTERVAL: float = 120.0
 
-# Ports that suppress the sensitivity penalty only (not the full dynamic baseline).
-# Traffic to these ports is well-understood enough that we don't want the
-# novelty / failure-rate multipliers tightening the threshold, but we still
-# want the baseline mean+std to anchor the limit rather than falling back to
-# the static HOST_THRESHOLD.
-STATIC_THRESHOLD_PORTS: set[int] = {443}
-
-# Multipliers applied to dynamic thresholds based on connection tracker signals.
-# Set a value to 1.0 to disable that penalty.
-SENSITIVITY_PENALTIES: dict[str, float] = {
-    "novelty_new":        0.8,   # 20% stricter for hosts with no baseline history
-    "high_failure_ratio": 0.8,   # 20% stricter for hosts with high RST/timeout rate
-}
-
-# Failed-connection ratio above which the high_failure_ratio penalty is applied.
-HIGH_FAILURE_RATIO_THRESHOLD: float = 0.6
-
-# Hard-tripwire constants.
-HARD_TRIP_MIN_SYNS: int = 10    # minimum SYNs before hard tripwire can fire
-
-# Cooldown (seconds) before the hard tripwire can fire again for the same source.
-# Prevents alert storms when a scanner sustains a high RST rate across hundreds
-# of packets — matches the cooldown pattern used in PacketThresholdDetector.
-HARD_TRIP_COOLDOWN: float = 30.0
+# Hard-tripwire constants (not user-tunable — operational safety rails).
+HARD_TRIP_MIN_SYNS: int   = 10   # minimum SYNs before hard tripwire can fire
+HARD_TRIP_COOLDOWN: float = 30.0 # cooldown before the hard tripwire can fire again
 
 
 class PortScanDetector:
+
     def __init__(self, connection_tracker: ConnectionTracker):
         self.connection_tracker = connection_tracker
-        self.vertical_scan = {}
-        self.horizontal_scan = {}
-        self.SCAN_WINDOW = 30
+
+        # ── Tunable parameters (sourced from config, editable at runtime) ──────
+        self.k: float                           = config.PORT_SCAN_K
+        self.min_port_scan_limit: int           = config.PORT_SCAN_MIN_PORT_SCAN_LIMIT
+        self.min_host_scan_limit: int           = config.PORT_SCAN_MIN_HOST_SCAN_LIMIT
+        # Dict replacement is the safe mutation pattern for dicts shared with
+        # the engine thread.  Copy so the caller cannot alias the config dict.
+        self.sensitivity_penalties: dict        = dict(config.PORT_SCAN_SENSITIVITY_PENALTIES)
+        self.high_failure_ratio_threshold: float = config.PORT_SCAN_HIGH_FAILURE_RATIO_THRESHOLD
+        # Set replacement is the safe pattern for sets.
+        self.static_threshold_ports: set        = set(config.PORT_SCAN_STATIC_THRESHOLD_PORTS)
+
+        # ── Scan-state tables ─────────────────────────────────────────────────
+        self.vertical_scan:   dict = {}
+        self.horizontal_scan: dict = {}
+        self.SCAN_WINDOW: int = 30
+
         # Static fallbacks used when a source IP is absent from the baseline.
         self.PORT_THRESHOLD = 8
         self.HOST_THRESHOLD = 10
+
         self._last_cleanup: float = 0.0
         self._baselines: dict[str, dict] = get_all_baselines()
         self._baselines_loaded_at: float = time.time()
         # Tracks the last hard-tripwire alert time per source IP.
         self._last_hard_trip_ts: dict[str, float] = {}
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     def _refresh_baselines_if_stale(self, now: float) -> None:
         """Re-fetch baseline snapshot if the refresh interval has elapsed."""
@@ -69,7 +61,7 @@ class PortScanDetector:
         Compute the combined sensitivity-penalty multiplier for *src*.
 
         Fetches host stats from the ConnectionTracker and applies
-        SENSITIVITY_PENALTIES multiplicatively.  A value < 1.0 tightens
+        self.sensitivity_penalties multiplicatively.  A value < 1.0 tightens
         (lowers) the dynamic threshold, making detection more aggressive.
 
         The novelty_new penalty is applied only when the host is both
@@ -82,49 +74,33 @@ class PortScanDetector:
         stats = self.connection_tracker.get_host_stats(src, now)
         multiplier = 1.0
 
+        # Snapshot the dict reference once to avoid TOCTOU if the settings
+        # panel replaces it between the two reads below.
+        penalties = self.sensitivity_penalties
+
         # Only penalise truly unknown hosts — those with neither a baseline
         # DB entry nor enough observed traffic to be classified as recurring.
         if stats["novelty"] == "new" and self._baselines.get(src) is None:
-            multiplier *= SENSITIVITY_PENALTIES["novelty_new"]
+            multiplier *= penalties.get("novelty_new", 1.0)
 
-        if stats["failed_connection_ratio"] > HIGH_FAILURE_RATIO_THRESHOLD:
-            multiplier *= SENSITIVITY_PENALTIES["high_failure_ratio"]
+        if stats["failed_connection_ratio"] > self.high_failure_ratio_threshold:
+            multiplier *= penalties.get("high_failure_ratio", 1.0)
 
         return multiplier
 
     def _get_vertical_threshold(self, src: str, now: float) -> int:
-        """
-        Return the effective vertical (port) scan threshold for *src*.
-
-            max(round((avg_unique_ports + K * std_unique_ports) * penalty), MIN_PORT_SCAN_LIMIT)
-
-        Falls back to the static PORT_THRESHOLD when *src* has no baseline entry.
-        """
+        
         host = self._baselines.get(src)
         if host is None:
             return self.PORT_THRESHOLD
 
         mean    = host.get("avg_unique_ports", 0.0) or 0.0
         std     = host.get("std_unique_ports", 0.0) or 0.0
-        dynamic = (mean + (_K * std)) * self._penalty_multiplier(src, now)
-        return max(int(round(dynamic)), MIN_PORT_SCAN_LIMIT)
+        dynamic = (mean + (self.k * std)) * self._penalty_multiplier(src, now)
+        return max(int(round(dynamic)), max(self.min_port_scan_limit, 1))
 
     def _get_horizontal_threshold(self, src: str, now: float, apply_penalty: bool = True) -> int:
-        """
-        Return the effective horizontal (destination) scan threshold for *src*.
-
-            max(round((avg_unique_destinations + K * std_unique_destinations) * penalty), MIN_HOST_SCAN_LIMIT)
-
-        Falls back to the static HOST_THRESHOLD when *src* has no baseline entry.
-
-        Parameters
-        ----------
-        apply_penalty : bool
-            When False the penalty multiplier is set to 1.0, leaving the
-            dynamic baseline intact but removing sensitivity adjustments.
-            Used for ports in STATIC_THRESHOLD_PORTS where we trust the
-            baseline mean+std but don't want novelty/failure penalties.
-        """
+        
         host = self._baselines.get(src)
         if host is None:
             return self.HOST_THRESHOLD
@@ -132,8 +108,8 @@ class PortScanDetector:
         mean    = host.get("avg_unique_destinations", 0.0) or 0.0
         std     = host.get("std_unique_destinations", 0.0) or 0.0
         penalty = self._penalty_multiplier(src, now) if apply_penalty else 1.0
-        dynamic = (mean + (_K * std)) * penalty
-        return max(int(round(dynamic)), MIN_HOST_SCAN_LIMIT)
+        dynamic = (mean + (self.k * std)) * penalty
+        return max(int(round(dynamic)), max(self.min_host_scan_limit, 1))
 
     def analyze_packet(self, pkt) -> list[dict] | None:
         if "IP" not in pkt or "TCP" not in pkt:
@@ -166,16 +142,16 @@ class PortScanDetector:
             last_trip = self._last_hard_trip_ts.get(src, 0.0)
             if now - last_trip >= HARD_TRIP_COOLDOWN:
                 self._last_hard_trip_ts[src] = now
+                msg = f"HIGH FAILURE RATE: {src}"
                 return [{
                     "src":       src,
                     "type":      "port_scan",
                     "metric":    "hard_tripwire",
                     "severity":  "HIGH",
-                    "message":   f"HIGH FAILURE RATE: {src}",
+                    "message":   msg,
                     "timestamp": int(now),
                 }]
-            # Still within cooldown — suppress the duplicate but continue so
-            # that the vertical/horizontal scan tables are still updated.
+
 
         alerts = []
 
@@ -191,20 +167,17 @@ class PortScanDetector:
             len(self.vertical_scan[vkey]["ports"]) >= self._get_vertical_threshold(src, now)
             and now - self.vertical_scan[vkey]["time"] <= self.SCAN_WINDOW
         ):
+            msg = f"VERTICAL SCAN: {src} → {dst}"
             alerts.append({
                 "src":       src,
                 "type":      "port_scan",
                 "metric":    "vertical",
                 "severity":  "HIGH",
-                "message":   f"VERTICAL SCAN: {src} → {dst}",
+                "message":   msg,
                 "timestamp": int(now),
             })
             # Reset the port set after alerting so that continued scanning
-            # beyond the threshold generates follow-up alerts once another
-            # threshold-worth of unique ports is seen.  This is intentional:
-            # a brief burst is caught once; a persistent scanner is caught
-            # repeatedly.  The hard tripwire (above) handles the sustained case
-            # via failure-rate rather than port-count alone.
+            # beyond the threshold generates follow-up alerts.
             del self.vertical_scan[vkey]
 
         # ---- Horizontal port scan ----
@@ -215,23 +188,22 @@ class PortScanDetector:
 
         self.horizontal_scan[hkey]["hosts"].add(dst)
 
-        # For ports in STATIC_THRESHOLD_PORTS we still use the dynamic baseline
-        # mean+std, but suppress the sensitivity penalty.  This preserves the
-        # per-host calibration while avoiding over-alerting on well-understood
-        # high-volume ports like 443.
-        apply_penalty = dport not in STATIC_THRESHOLD_PORTS
+        # Snapshot the set reference once to avoid TOCTOU.
+        static_ports = self.static_threshold_ports
+        apply_penalty = dport not in static_ports
         h_thresh = self._get_horizontal_threshold(src, now, apply_penalty=apply_penalty)
 
         if (
             len(self.horizontal_scan[hkey]["hosts"]) >= h_thresh
             and now - self.horizontal_scan[hkey]["time"] <= self.SCAN_WINDOW
         ):
+            msg = f"HORIZONTAL SCAN: {src} on port {dport}"
             alerts.append({
                 "src":       src,
                 "type":      "port_scan",
                 "metric":    "horizontal",
                 "severity":  "HIGH",
-                "message":   f"HORIZONTAL SCAN: {src} on port {dport}",
+                "message":   msg,
                 "timestamp": int(now),
             })
             del self.horizontal_scan[hkey]

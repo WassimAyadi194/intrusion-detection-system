@@ -110,6 +110,12 @@ class AlertFeed(QWidget):
             self._timer.timeout.connect(self._drain_queue)
             self._timer.start()
 
+        # Pruning timer: runs every 1 second to remove alerts older than 60s
+        self._prune_timer = QTimer(self)
+        self._prune_timer.setInterval(1000)
+        self._prune_timer.timeout.connect(self._prune_old_alerts)
+        self._prune_timer.start()
+
     # ------------------------------------------------------------------
     # Queue drain — called every 50 ms by QTimer (UI thread only)
     # ------------------------------------------------------------------
@@ -147,7 +153,8 @@ class AlertFeed(QWidget):
         host = alert.get("src", "unknown")
         description = alert.get("message", "")
 
-        entry = AlertEntry(ts_str, severity, host, description)
+        entry = AlertEntry(ts_str, severity, host, description, parent=self._inner)
+        entry._ts_epoch = float(ts_epoch)
         self._entries.insert(0, entry)
 
         # Hide the waiting overlay permanently on first real alert.
@@ -174,6 +181,21 @@ class AlertFeed(QWidget):
         """
         vsb = self._scroll.verticalScrollBar()
         vsb.setValue(vsb.minimum())
+
+    def _prune_old_alerts(self) -> None:
+        """Remove alerts older than 60 seconds to match the KPI window."""
+        now = time.time()
+        cutoff = now - 60.0
+        pruned = False
+
+        while self._entries and getattr(self._entries[-1], "_ts_epoch", now) < cutoff:
+            oldest = self._entries.pop()
+            self._vbox.removeWidget(oldest)
+            oldest.deleteLater()
+            pruned = True
+
+        if pruned:
+            self._apply_filter()
 
     # ------------------------------------------------------------------
     # Filter

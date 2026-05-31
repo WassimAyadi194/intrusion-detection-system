@@ -2,7 +2,11 @@ import collections
 import threading
 import time
 import ipaddress
- 
+
+from logs.ids_logger import get_logger
+
+log = get_logger(__name__)
+
 DEFAULT_COOLDOWN   = 15
 HIGH_COOLDOWN      = 5
 INFO_COOLDOWN      = 30
@@ -35,7 +39,7 @@ class AlertGate:
         self._info_cooldown    = info_cooldown
         self._last_seen: dict[tuple, float] = {}
         self._lock = threading.RLock()
-        self._allowed_ts: collections.deque[float] = collections.deque()
+        self._allowed_ts: collections.deque[tuple[float, str]] = collections.deque()
  
 
         # Per-host alert history used by worst_severity_since().
@@ -50,12 +54,14 @@ class AlertGate:
         if severity == CRITICAL_SEVERITY:
             with self._lock:
                 now = time.time()
-                self._allowed_ts.append(now)
+                self._allowed_ts.append((now, severity))
 
                 self._host_alerts.setdefault(src, collections.deque()).append(
                     (now, severity)
                 )
                 
+            time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))
+            print(f"{time_str} [{severity}] {alert.get('message', '')}")
             return alert
  
         key = self._dedup_key(alert)
@@ -74,21 +80,24 @@ class AlertGate:
             last = self._last_seen.get(key, 0.0)
             if now - last >= cooldown:
                 self._last_seen[key] = now
-                self._allowed_ts.append(now)
+                self._allowed_ts.append((now, severity))
                 
                 self._host_alerts.setdefault(src, collections.deque()).append(
                     (now, severity)
                 )
             
+                time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))
+                print(f"{time_str} [{severity}] {alert.get('message', '')}")
                 return alert
+                
             return None
  
-    def count_since(self, since: float) -> int:
+    def count_since(self, since: float, exclude_severities: set[str] | tuple[str, ...] = ("INFO",)) -> int:
         cutoff_prune = time.time() - _ALERT_HISTORY_TTL
         with self._lock:
-            while self._allowed_ts and self._allowed_ts[0] < cutoff_prune:
+            while self._allowed_ts and self._allowed_ts[0][0] < cutoff_prune:
                 self._allowed_ts.popleft()
-            return sum(1 for ts in self._allowed_ts if ts >= since)
+            return sum(1 for ts, sev in self._allowed_ts if ts >= since and sev not in exclude_severities)
  
     def worst_severity_since(self, src: str, since: float) -> str:
         cutoff_prune = time.time() - _ALERT_HISTORY_TTL

@@ -10,8 +10,8 @@ from PySide6.QtCore import Qt
 from frontend.theme import SPACING, LAYOUT_SIZES
 
 
-def _lbl(text: str, name: str, align=Qt.AlignmentFlag.AlignLeft) -> QLabel:
-    lbl = QLabel(text)
+def _lbl(text: str, name: str, align=Qt.AlignmentFlag.AlignLeft, parent=None) -> QLabel:
+    lbl = QLabel(text, parent)
     lbl.setObjectName(name)
     lbl.setAlignment(align)
     return lbl

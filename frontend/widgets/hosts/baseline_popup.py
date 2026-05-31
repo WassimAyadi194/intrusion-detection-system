@@ -5,7 +5,7 @@ Modal dialog showing stored baseline values for a host.
 """
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFrame, QDialogButtonBox,
+    QDialog, QVBoxLayout, QHBoxLayout, QFrame, QPushButton,
 )
 from PySide6.QtCore import Qt
 
@@ -58,6 +58,10 @@ class BaselinePopup(QDialog):
                      Qt.AlignmentFlag.AlignCenter)
             )
 
-        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        btn_box.rejected.connect(self.reject)
-        layout.addWidget(btn_box)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("secondaryBtn")
+        close_btn.clicked.connect(self.reject)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)

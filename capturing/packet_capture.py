@@ -36,11 +36,6 @@ class Packet:
                 "dport": dport,
                 "flags": flags,
             })
-        elif proto == "UDP":
-            self._layers["UDP"] = _Layer({
-                "sport": sport,
-                "dport": dport,
-            })
 
     def __getitem__(self, layer_name):
         return self._layers[layer_name]
@@ -55,14 +50,13 @@ class Packet:
 def _parse_tshark_line(line: str):
     parts = line.split("|")
 
-    if len(parts) < 7:
+    if len(parts) < 5:
         log.debug("Skipped line (%d parts): %r", len(parts), line)
         return None
 
-    ip_src, ip_dst, tcp_sport, tcp_dport, tcp_flags, udp_sport, udp_dport = parts
+    ip_src, ip_dst, tcp_sport, tcp_dport, tcp_flags = parts
 
     if not ip_src or not ip_dst:
-        log.debug("Missing IP fields: %r", line)
         return None
 
     try:
@@ -72,13 +66,7 @@ def _parse_tshark_line(line: str):
             flags = int(tcp_flags, 16) if tcp_flags else 0
             return Packet(ip_src, ip_dst, sport, dport, "TCP", flags)
 
-        elif udp_sport and udp_dport:
-            sport = int(udp_sport)
-            dport = int(udp_dport)
-            return Packet(ip_src, ip_dst, sport, dport, "UDP")
-
         else:
-            log.debug("Non-TCP/UDP packet: %r", line)
             return None
 
     except ValueError as e:
@@ -98,6 +86,7 @@ class PacketCapture:
         # 0.0 / None means the heartbeat loop has not fired yet.
         self._last_heartbeat_ts: float = 0.0
         self._last_heartbeat_wall_time: datetime | None = None  # human-readable twin
+        self.is_retrying = False
 
 
         self._STALL_TIMEOUT = _STALL_TIMEOUT
@@ -132,11 +121,10 @@ class PacketCapture:
             "-e", "tcp.srcport",
             "-e", "tcp.dstport",
             "-e", "tcp.flags",
-            "-e", "udp.srcport",
-            "-e", "udp.dstport",
             "-E", "separator=|",
             "-E", "occurrence=f",
             "-l",
+            "-f", "tcp",
         ]
         return cmd
 
@@ -157,6 +145,7 @@ class PacketCapture:
         attempt = 0
         while not self._stop_event.is_set():
             if attempt > 0:
+                self.is_retrying = True
                 log.warning(
                     "tshark restarting (attempt %d/%d) after %.1fs backoff",
                     attempt, _MAX_RESTARTS, _RESTART_BACKOFF,
@@ -221,6 +210,7 @@ class PacketCapture:
 
         try:
             for line in proc.stdout:
+                self.is_retrying = False
                 if self._stop_event.is_set():
                     break
 
@@ -320,11 +310,11 @@ class PacketCapture:
 
                 if eq >= _QUEUE_WARN_DEPTH:
                     log.warning(
-                        "engine_queue depth: %d — processing lag", eq
+                        "ENGINE QUEUE DEPTH: %d — PROCESSING LAG", eq
                     )
                 if cq >= _QUEUE_WARN_DEPTH:
                     log.warning(
-                        "collector_queue depth: %d — processing lag", cq
+                        "COLLECTOR QUEUE DEPTH: %d — PROCESSING LAG", cq
                     )
 
                 # Always emit a periodic depth line at DEBUG level so operators
@@ -343,12 +333,6 @@ class PacketCapture:
                 # Record when this UI tick fired (monotonic + wall-clock twin).
                 self._last_heartbeat_ts = time.monotonic()
                 self._last_heartbeat_wall_time = datetime.now()
-                eq = self.engine_queue.qsize()
-                cq = self.collector_queue.qsize()
-                log.info(
-                    "system healthy — engine_queue: %d  collector_queue: %d",
-                    eq, cq,
-                )
 
         t = threading.Thread(target=_heartbeat, daemon=True, name="Heartbeat")
         t.start()

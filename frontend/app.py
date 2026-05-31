@@ -16,6 +16,13 @@ from PySide6.QtGui import QShortcut, QKeySequence
 from frontend.main_window import MainWindow
 import frontend.styles as styles
 import frontend.theme as theme
+from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+
+def qt_message_handler(mode, context, message):
+    if mode == QtMsgType.QtWarningMsg and "QFont::setPointSize" in message:
+        return
+    import sys
+    print(message, file=sys.stderr)
 
 
 def apply_styles(app):
@@ -25,84 +32,46 @@ def apply_styles(app):
     app.setStyleSheet(styles.STYLESHEET)
 
 
-def _start_ids(alert_queue: queue.Queue) -> dict:
-
-    from database.init_db import initialize_database
-    from capturing.interface_utils import get_relevant_interfaces
-    from capturing.packet_capture import PacketCapture
-    from engine.ids_engine import DetectionEngine
-    from baseline.anomaly_detector import AnomalyDetector
-    from baseline.data_collector import LiveMetricsCollector
-
-    initialize_database()
-
-    ifaces = get_relevant_interfaces()
-    packet_capture = PacketCapture()
-    iface_names = [iface["index"] for iface in ifaces]
-    packet_capture.start_capture(iface_names)
-
-    anomaly_detector = AnomalyDetector()
-
-    # Build the engine first so LiveMetricsCollector can reference it.
-    # Wire collector back into engine afterwards — both are mutually dependent.
-    engine = DetectionEngine(
-        packet_capture=packet_capture,
-        anomaly_detector=anomaly_detector,
-        alert_queue=alert_queue,
-    )
-
-    metrics_collector = LiveMetricsCollector(packet_capture, engine)
-
-    # Attach the collector so engine.host_metrics_snapshot() can read
-    # _last_window and produce non-zero pkt_rate values.
-    engine.collector = metrics_collector
-
-    engine_thread = threading.Thread(
-        target=engine.run,
-        daemon=True,
-        name="DetectionEngine",
-    )
-    engine_thread.start()
-
-    collector_thread = threading.Thread(
-        target=metrics_collector.run,
-        daemon=True,
-        name="MetricsCollector",
-    )
-    collector_thread.start()
-
-    return {
-        "engine":            engine,           # exposed for KPI polling
-        "packet_capture":    packet_capture,
-        "metrics_collector": metrics_collector,
-        "collector_thread":  collector_thread,
-    }
-
-
-def _stop_ids(ids: dict) -> None:
-    """Graceful shutdown — mirrors the finally block in main.py."""
-    ids["metrics_collector"].stop()
-    ids["collector_thread"].join(timeout=5)
-    ids["packet_capture"].stop()
+from engine.launcher import start_ids as _start_ids, stop_ids as _stop_ids
 
 
 def main():
+    qInstallMessageHandler(qt_message_handler)
     app = QApplication(sys.argv)
-    app.setApplicationName("HYBRID IDS")
 
-    apply_styles(app)
+    # Set application metadata AFTER QApplication is constructed.
+    # Calling the static setters before QApplication(sys.argv) can cause
+    # Qt's style / font subsystem to materialise a transient top-level
+    # QWidget (visible as a tiny flickering window with title "HYBRID IDS")
+    # before the application object exists to own it.
+    app.setApplicationName("HYBRID IDS")
+    app.setOrganizationName("IDS")
+
+    
+
+    # Load persisted tuning values before the engine (and its detectors) are
+    # instantiated.  This overwrites the module-level defaults in config.py
+    # with whatever the user last applied via the Settings panel.
+    from config import apply_saved_settings
+    apply_saved_settings()
 
     # Shared queue: DetectionEngine → AlertFeed (thread-safe)
     alert_queue: queue.Queue = queue.Queue()
 
-    ids = _start_ids(alert_queue)
-
-    # Subscribe a UI log queue so LogsPanel can stream live log records.
+    # Subscribe a UI log queue BEFORE starting the engine so we catch all startup logs.
     from logs.ids_logger import get_log_queue
     log_queue = get_log_queue()
 
+    try:
+        ids = _start_ids(alert_queue)
+    except Exception as e:
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(None, "Startup Error", str(e))
+        sys.exit(1)
+
     window = MainWindow(alert_queue=alert_queue, log_queue=log_queue, engine=ids["engine"])
     window.show()
+    apply_styles(app)
 
     # Ctrl+R → reload styles live
     shortcut = QShortcut(QKeySequence("Ctrl+R"), window)

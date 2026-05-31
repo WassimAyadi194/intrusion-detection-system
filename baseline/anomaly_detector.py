@@ -2,32 +2,21 @@
 import sqlite3
 import time
 
+import config
 from logs.ids_logger import get_logger
-from config import DB_NAME, DB_MAX_RETRIES, DB_RETRY_DELAY
+from config import DB_NAME
 
 log = get_logger(__name__)
 
 # How many standard deviations from the mean triggers an alert.
-Z_THRESHOLD = 2.5
-
-# Floor applied to std before Z-score division.
-STD_FLOOR = 1.0
+Z_THRESHOLD = 1.5
 
 SEVERITY_LEVELS = [
     (4.0, "CRITICAL"),
     (3.0, "HIGH"),
-    (2.5, "MEDIUM"),  # only reachable if Z_THRESHOLD is later lowered
+    (2.5, "MEDIUM"),  
+    (1.5, "LOW"),
 ]
-
-_MIN_DELTAS: dict[str, float] = {
-    "syn_count":           20,   
-    "unique_ports":        10,  
-    "unique_destinations":  10,   
-    "packet_count":        1000,  
-}
-
-
-_MIN_BASELINE_SAMPLES: int = 10
 
 # Cooldown (seconds) per (host_ip, metric) after an alert fires.
 # Prevents the same burst straddling two 10-second windows from double-alerting.
@@ -42,7 +31,16 @@ def _severity(z_score: float) -> str:
 
 
 class AnomalyDetector:
+    
     def __init__(self):
+        # ── Tunable parameters (sourced from config, editable at runtime) ──────
+        self.std_floor: float              = config.ANOMALY_STD_FLOOR
+        self.min_baseline_samples: int     = config.ANOMALY_MIN_BASELINE_SAMPLES
+        # Dict replacement is the safe mutation pattern for dicts shared with
+        # the engine thread.  Copy so the caller cannot alias the config dict.
+        self.min_deltas: dict[str, float]  = dict(config.ANOMALY_MIN_DELTAS)
+
+        # ── Internal state ────────────────────────────────────────────────────
         self._baseline_cache: dict[str, dict] = {}
         self._cache_ttl = 300  # seconds before re-reading from DB
         self._cache_ts: dict[str, float] = {}
@@ -141,29 +139,19 @@ class AnomalyDetector:
         std: float,
         timestamp: int,
     ) -> dict | None:
-        """
-        Computes the Z-score for one metric. Returns a unified alert dict if:
-          1. The Z-score exceeds Z_THRESHOLD, AND
-          2. The absolute delta (value - avg) exceeds the per-metric _MIN_DELTAS
-             floor, AND
-          3. No alert for this (host, metric) pair fired within _ALERT_COOLDOWN
-             seconds.
-
-        Conditions 2 and 3 are the primary fix for tab-refresh false positives:
-        - Condition 2 prevents large Z-scores on near-zero baselines from alerting
-          on trivially small absolute changes (e.g. 2 → 8 SYNs).
-        - Condition 3 prevents a single burst straddling two 10-second windows
-          from generating duplicate alerts.
-        """
-        effective_std = max(std, STD_FLOOR)
+        
+        effective_std_floor = max(self.std_floor, 1e-6)
+        effective_std = max(std, effective_std_floor)
         z = (value - avg) / effective_std
 
-        if abs(z) < Z_THRESHOLD:
+        # Only alert on spikes (positive Z-score), not drops.
+        if z < Z_THRESHOLD:
             return None
 
-        # Absolute-delta guard — applied to every metric, not just packet_count.
-        min_delta = _MIN_DELTAS.get(metric, 10)
-        if abs(value - avg) < min_delta:
+        # Absolute-delta guard — snapshot min_deltas once to be safe.
+        min_deltas = self.min_deltas
+        min_delta = min_deltas.get(metric, 10.0)
+        if (value - avg) < min_delta:
             return None
 
         # Cooldown guard — suppress repeated alerts for the same (host, metric).
@@ -212,7 +200,7 @@ class AnomalyDetector:
         # Reject baselines built on too few observations. A host seen only a
         # handful of times during training will have near-zero means/stds, so
         # any normal burst produces enormous Z-scores and fires false positives.
-        if baseline.get("sample_count", 0) < _MIN_BASELINE_SAMPLES:
+        if baseline.get("sample_count", 0) < self.min_baseline_samples:
             return []
 
         timestamp = int(time.time())

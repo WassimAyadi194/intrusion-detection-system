@@ -11,7 +11,7 @@ from frontend.theme import SPACING, LAYOUT_SIZES, COMPONENT_SIZES
 from frontend.widgets.shared.helpers import _lbl
 
 
-def _badge_cell(severity: str) -> QWidget:
+def _badge_cell(severity: str, parent=None) -> QWidget:
     """
     Return a plain QWidget of fixed size (badge_col_w × badge_h) containing
     a centred severity QLabel.
@@ -28,7 +28,7 @@ def _badge_cell(severity: str) -> QWidget:
     )
 
     # Outer container — geometry owner, invisible to QSS.
-    cell = QWidget()
+    cell = QWidget(parent)
     # Fixed at the column reservation width so every row's badge slot is
     # identical regardless of severity text length.
     cell.setFixedSize(COMPONENT_SIZES["badge_col_w"], COMPONENT_SIZES["badge_h"])
@@ -40,7 +40,7 @@ def _badge_cell(severity: str) -> QWidget:
     inner.setSpacing(SPACING["none"])
 
     sev_name = f"severityBadge{severity.capitalize()}"
-    badge = _lbl(severity, sev_name, Qt.AlignmentFlag.AlignCenter)
+    badge = _lbl(severity, sev_name, Qt.AlignmentFlag.AlignCenter, parent=cell)
     # The label fills the visual badge width; the cell owns the column width.
     badge.setFixedSize(badge_visual_w, COMPONENT_SIZES["badge_h"])
     badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -72,22 +72,22 @@ class AlertEntry(QWidget):
         row.setSpacing(SPACING["lg"])
 
         # ── Badge column (fixed-width container, immune to QSS resizing) ──
-        row.addWidget(_badge_cell(severity), 0, Qt.AlignmentFlag.AlignTop)
+        row.addWidget(_badge_cell(severity, parent=self), 0, Qt.AlignmentFlag.AlignTop)
 
         # ── Timestamp ─────────────────────────────────────────────────────
-        ts = _lbl(timestamp, "alertTimestamp")
+        ts = _lbl(timestamp, "alertTimestamp", parent=self)
         ts.setFixedWidth(COMPONENT_SIZES["timestamp_col_w"])
         ts.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         row.addWidget(ts, 0, Qt.AlignmentFlag.AlignTop)
 
         # ── Host / IP ─────────────────────────────────────────────────────
-        h = _lbl(host, "alertHost")
+        h = _lbl(host, "alertHost", parent=self)
         h.setFixedWidth(COMPONENT_SIZES["host_col_w"])
         h.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         row.addWidget(h, 0, Qt.AlignmentFlag.AlignTop)
 
         # ── Description (word-wrapping, expands row height) ───────────────
-        desc = _lbl(description, "alertDesc")
+        desc = _lbl(description, "alertDesc", parent=self)
         desc.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         desc.setWordWrap(True)
         desc.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)

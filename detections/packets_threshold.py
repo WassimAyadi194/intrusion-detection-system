@@ -1,41 +1,47 @@
 # detections/packets_threshold.py
 import time
 
+import config
 from baseline.baseline_reader import get_all_baselines
 from detections.connection_tracking import ConnectionTracker
-
-# Multiplier for the standard deviation term in the dynamic threshold formula.
-# At 5σ a normal-distribution false-positive rate is ~0.00006%, safely above
-# any tab-refresh / streaming burst.
-_K: float = 2.0
-
-# Absolute lower bound — prevents the threshold from being too permissive for
-# hosts whose mean + k*std is unrealistically low.
-_MIN_GLOBAL_THRESHOLD: int = 1000
-
-# Cooldown (seconds) per source IP after a flood alert fires.
-_ALERT_COOLDOWN: float = 10.0
 
 # How often (seconds) to refresh the baseline snapshot from the DB.
 # Prevents stale data when baselines are trained after the detector starts.
 _BASELINE_REFRESH_INTERVAL: float = 120.0
 
-# Multipliers applied to dynamic thresholds based on connection tracker signals.
-# Set a value to 1.0 to disable that penalty.
-SENSITIVITY_PENALTIES: dict[str, float] = {
-    "novelty_new":        0.8,   # 20% stricter for hosts with no baseline history
-    "high_failure_ratio": 0.8,   # 20% stricter for hosts with high RST/timeout rate
-}
-
-# Failed-connection ratio above which the high_failure_ratio penalty is applied.
-HIGH_FAILURE_RATIO_THRESHOLD: float = 0.6
-
 
 class PacketThresholdDetector:
+    """
+    Detects packet-flood attacks using a dynamic per-source threshold.
+
+    All tunable parameters are stored as *instance* attributes so that the
+    frontend settings panel can mutate them at runtime (e.g. self.k = 3.0)
+    without restarting the engine.  The values are initialised from config.py
+    (which itself loads from ids_settings.json at startup).
+
+    Thread-safety notes
+    -------------------
+    - float / int / bool attributes: atomic under CPython's GIL for reads and
+      single-assignment writes.
+    - sensitivity_penalties (dict): mutate by replacing the whole dict
+      atomically — do NOT call dict.update() from outside the engine thread.
+    """
+
     def __init__(self, connection_tracker: ConnectionTracker):
         self.connection_tracker = connection_tracker
+
+        # ── Tunable parameters (sourced from config, editable at runtime) ──────
+        self.k: float                     = config.PACKET_K
+        self.min_global_threshold: int    = config.PACKET_MIN_GLOBAL_THRESHOLD
+        self.WINDOW: int                  = config.PACKET_WINDOW
+        # Dict replacement is the safe mutation pattern for dicts shared with
+        # the engine thread.  Copy so the caller cannot accidentally alias the
+        # config module's own dict.
+        self.sensitivity_penalties: dict  = dict(config.PACKET_SENSITIVITY_PENALTIES)
+        self.high_failure_ratio_threshold: float = config.PACKET_HIGH_FAILURE_RATIO_THRESHOLD
+
+        # ── Internal state ────────────────────────────────────────────────────
         self.packet_counts: dict[str, dict] = {}
-        self.WINDOW = 10
         # Static fallback used when a source IP is absent from the baseline.
         self.THRESHOLD = 3000
         self._last_cleanup: float = 0.0
@@ -43,6 +49,12 @@ class PacketThresholdDetector:
         self._baselines_loaded_at: float = time.time()
         # Tracks the last flood-alert time per source IP for cooldown enforcement.
         self._last_alert_ts: dict[str, float] = {}
+        # Cooldown (seconds) per source IP after a flood alert fires.
+        self._alert_cooldown: float = 10.0
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     def _refresh_baselines_if_stale(self, now: float) -> None:
         """Re-fetch baseline snapshot if the refresh interval has elapsed."""
@@ -55,7 +67,7 @@ class PacketThresholdDetector:
         Compute the combined sensitivity-penalty multiplier for *src*.
 
         Fetches host stats from the ConnectionTracker and applies
-        SENSITIVITY_PENALTIES multiplicatively.  A value < 1.0 tightens
+        self.sensitivity_penalties multiplicatively.  A value < 1.0 tightens
         (lowers) the dynamic threshold, making detection more aggressive.
 
         The novelty_new penalty is applied only when the host is both
@@ -68,15 +80,46 @@ class PacketThresholdDetector:
         stats = self.connection_tracker.get_host_stats(src, now)
         multiplier = 1.0
 
+        # Snapshot the dict reference once to avoid TOCTOU if the settings
+        # panel replaces it between the two reads below.
+        penalties = self.sensitivity_penalties
+
         # Only penalise truly unknown hosts — those with neither a baseline
         # DB entry nor enough observed traffic to be classified as recurring.
         if stats["novelty"] == "new" and self._baselines.get(src) is None:
-            multiplier *= SENSITIVITY_PENALTIES["novelty_new"]
+            multiplier *= penalties.get("novelty_new", 1.0)
 
-        if stats["failed_connection_ratio"] > HIGH_FAILURE_RATIO_THRESHOLD:
-            multiplier *= SENSITIVITY_PENALTIES["high_failure_ratio"]
+        if stats["failed_connection_ratio"] > self.high_failure_ratio_threshold:
+            multiplier *= penalties.get("high_failure_ratio", 1.0)
 
         return multiplier
+
+    def _get_threshold(self, src: str, now: float) -> int:
+        """
+        Return the effective packet-flood threshold for *src*.
+
+            max(round((mean + k * std) * penalty), min_global_threshold)
+
+        The penalty multiplier is sourced from the ConnectionTracker to apply
+        stricter thresholds for new or high-failure-rate hosts.
+
+        Guard: if the computed dynamic value is unrealistically low (< 1),
+        fall back to the static THRESHOLD to prevent divide-by-zero-style
+        runaway detection after misconfiguration.
+        """
+        host = self._baselines.get(src)
+        if host is None:
+            return self.THRESHOLD
+
+        mean    = host.get("avg_packet_count", 0.0) or 0.0
+        std     = host.get("std_packet_count", 0.0) or 0.0
+        dynamic = (mean + (self.k * std)) * self._penalty_multiplier(src, now)
+        # Clamp: never go below min_global_threshold, never go below 1
+        return max(int(round(dynamic)), max(self.min_global_threshold, 1))
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def analyze_packet(self, pkt) -> list[dict] | None:
         if "IP" not in pkt:
@@ -94,7 +137,7 @@ class PacketThresholdDetector:
         alerts = []
 
         if now - entry["start"] > self.WINDOW:
-            # Window expired — start fresh. Current packet opens the new window.
+            # Window expired — start fresh.  Current packet opens the new window.
             self.packet_counts[src] = {"count": 1, "start": now}
         else:
             entry["count"] += 1
@@ -102,21 +145,18 @@ class PacketThresholdDetector:
 
             if entry["count"] >= threshold:
                 last_alert = self._last_alert_ts.get(src, 0.0)
-                if now - last_alert >= _ALERT_COOLDOWN:
+                if now - last_alert >= self._alert_cooldown:
                     self._last_alert_ts[src] = now
+                    msg = f"PACKET FLOOD DETECTED from {src}"
                     alerts.append({
                         "src":       src,
                         "type":      "packet_flood",
                         "metric":    entry["count"],
                         "severity":  "MEDIUM",
-                        "message":   f"PACKET FLOOD DETECTED from {src}",
+                        "message":   msg,
                         "timestamp": int(now),
                     })
                 # Reset the window only after threshold is crossed (alert or suppressed).
-                # Previously this del was OUTSIDE the `if entry["count"] >= threshold`
-                # block, so it ran on every single packet once the count hit threshold,
-                # resetting to zero and immediately climbing back up — causing repeated
-                # fires within one burst even when the dynamic threshold was 10 000+.
                 del self.packet_counts[src]
 
         if now - self._last_cleanup >= self.WINDOW:
@@ -125,24 +165,6 @@ class PacketThresholdDetector:
 
         return alerts if alerts else None
 
-    def _get_threshold(self, src: str, now: float) -> int:
-        """
-        Return the effective packet-flood threshold for *src*.
-
-            max(round((mean + K * std) * penalty), _MIN_GLOBAL_THRESHOLD)
-
-        The penalty multiplier is sourced from the ConnectionTracker to apply
-        stricter thresholds for new or high-failure-rate hosts.
-        """
-        host = self._baselines.get(src)
-        if host is None:
-            return self.THRESHOLD
-
-        mean    = host.get("avg_packet_count", 0.0) or 0.0
-        std     = host.get("std_packet_count", 0.0) or 0.0
-        dynamic = (mean + (_K * std)) * self._penalty_multiplier(src, now)
-        return max(int(round(dynamic)), _MIN_GLOBAL_THRESHOLD)
-
     def cleanup(self, now: float) -> None:
         for src in list(self.packet_counts.keys()):
             if now - self.packet_counts[src]["start"] > self.WINDOW:
@@ -150,5 +172,5 @@ class PacketThresholdDetector:
 
         # Evict stale cooldown entries to prevent unbounded growth.
         for src in list(self._last_alert_ts.keys()):
-            if now - self._last_alert_ts[src] > _ALERT_COOLDOWN:
+            if now - self._last_alert_ts[src] > self._alert_cooldown:
                 del self._last_alert_ts[src]

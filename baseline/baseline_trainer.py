@@ -35,8 +35,7 @@ def _ema(old: float, new: float, alpha: float = BASELINE_EMA_ALPHA) -> float:
 
 
 
-# Main trainer
-def train_baseline(host_ip: str | None = None):
+def train_baseline(host_ip: str | None = None, only_existing: bool = False):
 
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
@@ -47,6 +46,10 @@ def train_baseline(host_ip: str | None = None):
         cursor.execute(
             "SELECT DISTINCT host_ip FROM live_metrics WHERE host_ip = ?",
             (host_ip,)
+        )
+    elif only_existing:
+        cursor.execute(
+            "SELECT DISTINCT host_ip FROM live_metrics WHERE host_ip IN (SELECT host_ip FROM baseline)"
         )
     else:
         cursor.execute("SELECT DISTINCT host_ip FROM live_metrics")
@@ -188,4 +191,6 @@ def train_baseline(host_ip: str | None = None):
 
 
 if __name__ == "__main__":
-    train_baseline()
+    import sys
+    only_existing = "--only-existing" in sys.argv
+    train_baseline(only_existing=only_existing)

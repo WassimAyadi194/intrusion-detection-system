@@ -28,7 +28,7 @@ import time
 
 from config import DB_NAME as _DB_NAME
 
-_LOG_FORMAT        = "%(asctime)s [%(levelname)-8s] %(name)-20s — %(message)s"
+_LOG_FORMAT        = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 _DATE_FORMAT       = "%Y-%m-%d %H:%M:%S"
 _DB_BATCH_SIZE     = 50      # flush when this many records are queued
 _DB_FLUSH_INTERVAL = 5.0     # flush at least this often (seconds)
@@ -106,7 +106,7 @@ class _DBHandler(logging.Handler):
     """
 
     def __init__(self):
-        super().__init__(level=logging.INFO)
+        super().__init__(level=logging.DEBUG)
         self._queue: queue.Queue = queue.Queue(maxsize=_DB_QUEUE_MAXSIZE)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(

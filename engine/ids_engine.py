@@ -4,7 +4,7 @@ import sqlite3
 import time
 
 from detections.port_scan import PortScanDetector
-from detections.connection_tracking import ConnectionTracker
+from detections.connection_tracking import ConnectionTracker, _is_loopback
 from detections.packets_threshold import PacketThresholdDetector
 from detections.alert_gate import AlertGate
 from logs.ids_logger import get_logger
@@ -16,7 +16,7 @@ _BATCH_MAX     = 64    # max packets to drain per iteration
 _BATCH_TIMEOUT = 0.05  # seconds to wait for at least one packet
 
 # Severities that are informational only — excluded from both DB writes and the UI alert queue.
-_UI_EXCLUDE_SEVERITIES = {"INFO", "LOW"}
+_UI_EXCLUDE_SEVERITIES = {"INFO"}
 
 # Window (seconds) used by the "Alerts (60 s)" KPI tile.
 _KPI_ALERT_WINDOW, _SNAPSHOT_ALERT_WINDOW = 60, 60
@@ -117,6 +117,10 @@ class DetectionEngine:
         # AlertGate is the single suppression authority for ALL alert types.
         self.alert_gate = AlertGate()
 
+    def reload_baseline_hosts(self) -> None:
+        """Reload known host IPs from the baseline table and update connection tracker."""
+        self.connection_tracker.baseline_hosts = _load_baseline_hosts()
+
     @property
     def capture_state(self) -> str:
         """
@@ -125,6 +129,8 @@ class DetectionEngine:
         """
         if self.packet_capture is None:
             return "N/A"
+        if getattr(self.packet_capture, "is_retrying", False):
+            return "RETRYING STARTUP"
         return "STOPPED" if self.packet_capture._stop_event.is_set() else "RUNNING"
 
     def kpi_snapshot(self) -> dict:
@@ -133,13 +139,19 @@ class DetectionEngine:
         any thread (Qt timer thread included).
         """
         # Alerts in the last 60 s — reads only the deque, O(n) but tiny.
-        alerts_60s = self.alert_gate.count_since(time.time() - _KPI_ALERT_WINDOW)
+        alerts_60s = self.alert_gate.count_since(time.time() - _KPI_ALERT_WINDOW, exclude_severities=_UI_EXCLUDE_SEVERITIES)
 
-        # Unique source IPs currently tracked in the connection table.
-        # The dict is written from the engine thread; reading it here is
-        # safe under CPython's GIL (dict iteration is atomic enough for a
-        # best-effort KPI read).
-        active_hosts = len({k[0] for k in self.connection_tracker.connections})
+        # Count active hosts using the same aggregation as host_metrics_snapshot()
+        # so the KPI tile is always consistent with the Host Metrics feed.
+        # Loopback sources are excluded, mirroring the UI's own filter.
+        conn_counts: dict[str, int] = {}
+        for _key in self.connection_tracker.connections:
+            src = _key[0]
+            conn_counts[src] = conn_counts.get(src, 0) + 1
+        active_hosts = sum(
+            1 for src, cnt in conn_counts.items()
+            if cnt > 0 and not _is_loopback(src)
+        )
 
         # Queue depths — qsize() is always thread-safe on queue.Queue.
         if self.packet_capture is not None:
@@ -271,8 +283,6 @@ class DetectionEngine:
 
         if allowed:
             self._save_alerts(allowed)
-            for a in allowed:
-                print(f"[ANOMALY] {a['severity']} | {a['src']} | {a['message']}")
 
             if self._alert_queue is not None:
                 for a in allowed:
@@ -308,9 +318,6 @@ class DetectionEngine:
 
                 if all_allowed:
                     self._save_alerts(all_allowed)
-                    for a in all_allowed:
-                        msg = f"[{a['severity']}] {a['type'].upper()} | {a['message']}"
-                        print(msg.encode(errors="replace").decode())
 
                     # Only push actionable alerts to the UI queue.
                     # INFO/LOW are connection tracking noise — at zero cooldown

@@ -26,7 +26,7 @@ class LogEntry(QWidget):
         )
         row.setSpacing(SPACING["lg"])
 
-        ts = _lbl(timestamp, "logTimestamp", Qt.AlignmentFlag.AlignVCenter)
+        ts = _lbl(timestamp, "logTimestamp", Qt.AlignmentFlag.AlignVCenter, parent=self)
         ts.setFixedWidth(COMPONENT_SIZES["timestamp_col_w"])
         row.addWidget(ts, 0, Qt.AlignmentFlag.AlignVCenter)
 
@@ -36,11 +36,11 @@ class LogEntry(QWidget):
         }
         normalized = _LEVEL_NORM.get(level.upper(), level.upper())
         lvl_name = f"logLevel{normalized.capitalize()}"
-        lvl = _lbl(level, lvl_name, Qt.AlignmentFlag.AlignCenter)
+        lvl = _lbl(level, lvl_name, Qt.AlignmentFlag.AlignCenter, parent=self)
         lvl.setFixedWidth(COMPONENT_SIZES["badge_w"])
         row.addWidget(lvl, 0, Qt.AlignmentFlag.AlignVCenter)
 
         row.addWidget(
-            _lbl(message, "logText", Qt.AlignmentFlag.AlignVCenter),
+            _lbl(message, "logText", Qt.AlignmentFlag.AlignVCenter, parent=self),
             1, Qt.AlignmentFlag.AlignVCenter,
         )

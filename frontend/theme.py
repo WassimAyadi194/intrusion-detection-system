@@ -128,7 +128,7 @@ FONT: dict[str, int] = {
 
 LAYOUT_SIZES: dict[str, int] = {
     "panel_header_h":       40,   # shared height for all panel header bars
-    "page_header_h":        44,   # top page breadcrumb / title strip
+    "page_header_h":        64,   # top page breadcrumb / title strip
     "bottom_bar_h":         40,   # global bottom status / heartbeat bar
     "status_bar_h":         32,   # application-level status bar (main window)
     "kpi_tile_h":           96,   # KPI tile card height
@@ -136,7 +136,7 @@ LAYOUT_SIZES: dict[str, int] = {
     "card_h":              100,   # generic metric/host card height
     "logs_panel_h":        600,   # max height of the expanded collapsible logs panel
     "baseline_popup_w":    320,   # minimum width of the baseline detail popup dialog
-    "sidebar_w_expanded":  220,   # sidebar at full width
+    "sidebar_w_expanded":  300,   # sidebar at full width
     "sidebar_w_collapsed":  56,   # sidebar icon-only collapsed width
     "nav_button_h":         44,   # nav button and toggle button height
     "brand_label_h":        52,   # brand / app name label height

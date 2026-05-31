@@ -1,7 +1,7 @@
 """
 frontend/styles.py
 ──────────────────
-QSS stylesheet for Antigravity IDS.
+QSS stylesheet .
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ENFORCEMENT RULES — VIOLATIONS ARE ARCHITECTURAL ERRORS
@@ -88,9 +88,9 @@ QPushButton#toggleButton {{
     border: none;
     border-bottom: {_cs["border_w"]}px solid {_c["border"]};
     color: {_c["text_muted"]};
-    font-size: {_f["lg"]}px;
-    padding: 0 {_cs["toggle_padding_h"]}px;
-    text-align: right;
+    font-size: {_f["xxl"]}px;
+    padding: 0;
+    text-align: center;
 }}
 QPushButton#toggleButton:hover {{
     background-color: {_c["bg_hover"]};
@@ -253,28 +253,41 @@ QWidget#scrollInner {{
     background-color: {_c["transparent"]};
 }}
 
-/* Themed scrollbar for alert feed and any other scroll areas */
+/* Themed scrollbar — scoped to logs/alert scroll areas only */
 QScrollArea#transparentScroll {{
     background-color: {_c["transparent"]};
 }}
-QScrollBar:vertical {{
+QScrollArea#transparentScroll QScrollBar:vertical {{
     background-color: {_c["bg_surface"]};
     width: {_s["md"]}px;
     margin: {_s["none"]}px;
+    border: none;
 }}
-QScrollBar::handle:vertical {{
+QScrollArea#transparentScroll QScrollBar::handle:vertical {{
     background-color: {_c["border"]};
     border-radius: {_cs["border_radius_sm"]}px;
     min-height: {_s["xxl"]}px;
+    margin: {_s["none"]}px;
 }}
-QScrollBar::handle:vertical:hover {{
+QScrollArea#transparentScroll QScrollBar::handle:vertical:hover {{
     background-color: {_c["text_dim"]};
 }}
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {{
+QScrollArea#transparentScroll QScrollBar::add-line:vertical,
+QScrollArea#transparentScroll QScrollBar::sub-line:vertical {{
     height: {_s["none"]}px;
+    border: none;
+    background: none;
 }}
-
+QScrollArea#transparentScroll QScrollBar::up-arrow:vertical,
+QScrollArea#transparentScroll QScrollBar::down-arrow:vertical {{
+    background: none;
+    border: none;
+}}
+QScrollArea#transparentScroll QScrollBar::add-page:vertical,
+QScrollArea#transparentScroll QScrollBar::sub-page:vertical {{
+    background: none;
+    border: none;
+}}
 
 /* ═══════════════════════════════════════════════════════════
    FILTER BAR
@@ -520,8 +533,22 @@ QPushButton#noveltyBadgeRecurring:hover {{
     color: {_c["accent"]};
 }}
 
-/* LOOPBACK — muted: 127.x.x.x / loopback traffic */
-QPushButton#noveltyBadgeLoopback {{
+/* Activity badges */
+QPushButton#activityBadgeActive {{
+    background-color: {_c["transparent"]};
+    border: {_cs["border_w"]}px solid {_c["accent"]};
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["accent"]};
+    font-size: {_f["xs"]}px;
+    font-weight: 700;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_cs["badge_padding_v"]}px {_cs["badge_padding_h"]}px;
+}}
+QPushButton#activityBadgeActive:hover {{
+    background-color: {_c["bg_hover"]};
+}}
+
+QPushButton#activityBadgeInactive {{
     background-color: {_c["transparent"]};
     border: {_cs["border_w"]}px solid {_c["border"]};
     border-radius: {_cs["border_radius_sm"]}px;
@@ -531,7 +558,7 @@ QPushButton#noveltyBadgeLoopback {{
     letter-spacing: {_cs["letter_xs"]}px;
     padding: {_cs["badge_padding_v"]}px {_cs["badge_padding_h"]}px;
 }}
-QPushButton#noveltyBadgeLoopback:hover {{
+QPushButton#activityBadgeInactive:hover {{
     background-color: {_c["bg_hover"]};
     border-color: {_c["text_muted"]};
     color: {_c["text_muted"]};
@@ -654,12 +681,14 @@ QWidget#dashBottomBar {{
 QLabel#heartbeatPulse {{
     color: {_c["accent_green"]};
     font-size: {_f["sm_body"]}px;
+    margin-top: 8px;
 }}
 QLabel#heartbeatLabel {{
     color: {_c["text_muted"]};
     font-size: {_f["sm"]}px;
     font-family: "Consolas", "Courier New", monospace;
     letter-spacing: {_cs["letter_half"]}px;
+    margin-top: 10px;
 }}
 QLabel#noStallBadge {{
     color: {_c["accent_green"]};
@@ -683,6 +712,273 @@ QLabel#queueLabel {{
     color: {_c["text_dim"]};
     font-size: {_f["sm"]}px;
     font-family: "Consolas", "Courier New", monospace;
+}}
+
+
+/* ═══════════════════════════════════════════════════════════
+   SETTINGS PAGE
+   ═══════════════════════════════════════════════════════════ */
+
+QWidget#settingsPage {{
+    background-color: {_c["bg_base"]};
+}}
+
+QWidget#settingsPanel {{
+    background-color: {_c["transparent"]};
+}}
+
+QWidget#settingsBody {{
+    background-color: {_c["transparent"]};
+}}
+
+/* Section headers — uppercase, accented, visually separate groups */
+QLabel#settingSectionHeader {{
+    color: {_c["accent"]};
+    font-size: {_f["sm"]}px;
+    font-weight: 700;
+    letter-spacing: {_cs["letter_sm"]}px;
+    padding-top: {_s["md"]}px;
+    padding-bottom: {_s["xs"]}px;
+}}
+
+/* Per-parameter label */
+QLabel#settingLabel {{
+    color: {_c["text_muted"]};
+    font-size: {_f["md"]}px;
+}}
+
+/* Spin-box inputs */
+QDoubleSpinBox#settingSpinBox,
+QSpinBox#settingSpinBox {{
+    background-color: {_c["bg_raised"]};
+    border: {_cs["border_w"]}px solid {_c["border"]};
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["text_primary"]};
+    font-size: {_f["md"]}px;
+    font-family: "Consolas", "Courier New", monospace;
+    padding: {_s["xs"]}px {_s["sm"]}px;
+    selection-background-color: {_c["accent"]};
+}}
+QDoubleSpinBox#settingSpinBox:focus,
+QSpinBox#settingSpinBox:focus {{
+    border-color: {_c["accent"]};
+}}
+QDoubleSpinBox#settingSpinBox::up-button,
+QDoubleSpinBox#settingSpinBox::down-button,
+QSpinBox#settingSpinBox::up-button,
+QSpinBox#settingSpinBox::down-button {{
+    width: {_s["lg"]}px;
+    border: none;
+    background-color: {_c["bg_hover"]};
+}}
+QDoubleSpinBox#settingSpinBox::up-button:hover,
+QDoubleSpinBox#settingSpinBox::down-button:hover,
+QSpinBox#settingSpinBox::up-button:hover,
+QSpinBox#settingSpinBox::down-button:hover {{
+    background-color: {_c["accent"]};
+}}
+
+/* Horizontal rule between sections */
+QFrame#settingSeparator {{
+    color: {_c["border"]};
+    background-color: {_c["border"]};
+    max-height: {_cs["border_w"]}px;
+    margin: {_s["sm"]}px {_s["none"]}px;
+}}
+
+/* Button bar */
+QWidget#settingsButtonBar {{
+    background-color: {_c["bg_void"]};
+    border-top: {_cs["border_w"]}px solid {_c["border"]};
+}}
+
+/* Apply button — primary accent */
+QPushButton#settingsApplyBtn {{
+    background-color: {_c["accent"]};
+    border: none;
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["bg_void"]};
+    font-size: {_f["sm_body"]}px;
+    font-weight: 700;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_s["sm"]}px {_s["xl"]}px;
+}}
+QPushButton#settingsApplyBtn:hover {{
+    background-color: {_c["text_primary"]};
+}}
+QPushButton#settingsApplyBtn:pressed {{
+    background-color: {_c["border"]};
+}}
+
+/* Reset button — muted outline */
+QPushButton#settingsResetBtn {{
+    background-color: {_c["transparent"]};
+    border: {_cs["border_w"]}px solid {_c["border"]};
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["text_muted"]};
+    font-size: {_f["sm_body"]}px;
+    font-weight: 600;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_s["sm"]}px {_s["xl"]}px;
+}}
+QPushButton#settingsResetBtn:hover {{
+    border-color: {_c["accent_amber"]};
+    color: {_c["accent_amber"]};
+}}
+
+
+/* ═══════════════════════════════════════════════════════════
+   IDS CONTROL BUTTONS  (Stop / Start / Restart)
+   ═══════════════════════════════════════════════════════════ */
+
+QPushButton#idsStopBtn {{
+    background-color: {_c["accent_red"]};
+    border: none;
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["bg_void"]};
+    font-size: {_f["sm_body"]}px;
+    font-weight: 700;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_s["xs"]}px {_s["md"]}px;
+}}
+QPushButton#idsStopBtn:hover {{
+    background-color: {_c["accent_orange"]};
+}}
+QPushButton#idsStopBtn:pressed {{
+    background-color: {_c["border"]};
+}}
+
+QPushButton#idsStartBtn {{
+    background-color: {_c["accent_green"]};
+    border: none;
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["bg_void"]};
+    font-size: {_f["sm_body"]}px;
+    font-weight: 700;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_s["xs"]}px {_s["md"]}px;
+}}
+QPushButton#idsStartBtn:hover {{
+    background-color: {_c["accent"]};
+}}
+QPushButton#idsStartBtn:pressed {{
+    background-color: {_c["border"]};
+}}
+
+QPushButton#idsRestartBtn {{
+    background-color: {_c["transparent"]};
+    border: {_cs["border_w"]}px solid {_c["accent_amber"]};
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["accent_amber"]};
+    font-size: {_f["sm_body"]}px;
+    font-weight: 600;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_s["xs"]}px {_s["md"]}px;
+}}
+QPushButton#idsRestartBtn:hover {{
+    background-color: {_c["bg_hover"]};
+    border-color: {_c["accent"]};
+    color: {_c["accent"]};
+}}
+QPushButton#idsRestartBtn:pressed {{
+    background-color: {_c["border"]};
+}}
+
+
+/* ═══════════════════════════════════════════════════════════
+   GENERIC ACTION BUTTONS  (primaryBtn / secondaryBtn)
+   Used by: Export CSV (dashboard), Export/Cancel (dialog),
+            Close (baseline popup)
+   ═══════════════════════════════════════════════════════════ */
+
+QPushButton#primaryBtn {{
+    background-color: {_c["accent"]};
+    border: none;
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["bg_void"]};
+    font-size: {_f["sm_body"]}px;
+    font-weight: 700;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_s["sm"]}px {_s["xl"]}px;
+}}
+QPushButton#primaryBtn:hover {{
+    background-color: {_c["text_primary"]};
+}}
+QPushButton#primaryBtn:pressed {{
+    background-color: {_c["border"]};
+}}
+
+QPushButton#secondaryBtn {{
+    background-color: {_c["transparent"]};
+    border: {_cs["border_w"]}px solid {_c["border"]};
+    border-radius: {_cs["border_radius_sm"]}px;
+    color: {_c["text_muted"]};
+    font-size: {_f["sm_body"]}px;
+    font-weight: 600;
+    letter-spacing: {_cs["letter_xs"]}px;
+    padding: {_s["sm"]}px {_s["xl"]}px;
+}}
+QPushButton#secondaryBtn:hover {{
+    border-color: {_c["accent"]};
+    color: {_c["accent"]};
+}}
+QPushButton#secondaryBtn:pressed {{
+    background-color: {_c["bg_hover"]};
+}}
+
+
+/* ═══════════════════════════════════════════════════════════
+   CHECKBOXES  (export dialog)
+   ═══════════════════════════════════════════════════════════ */
+
+QCheckBox {{
+    color: {_c["text_muted"]};
+    font-size: {_f["sm_body"]}px;
+    spacing: {_s["md"]}px;
+}}
+QCheckBox::indicator {{
+    width: {_s["xl"]}px;
+    height: {_s["xl"]}px;
+    border-radius: {_cs["border_radius_sm"]}px;
+    border: {_cs["border_w"]}px solid {_c["border"]};
+    background-color: {_c["bg_raised"]};
+}}
+QCheckBox::indicator:checked {{
+    background-color: {_c["accent"]};
+    border-color: {_c["accent"]};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {_c["text_muted"]};
+}}
+
+
+/* ═══════════════════════════════════════════════════════════
+   POPUP DIALOGS  (export dialog, baseline popup)
+   ═══════════════════════════════════════════════════════════ */
+
+QDialog {{
+    background-color: {_c["bg_surface"]};
+    border: {_cs["border_w"]}px solid {_c["border"]};
+}}
+
+
+/* ═══════════════════════════════════════════════════════════
+   CONTEXT / DROPDOWN MENUS  (retrain baseline dropdown)
+   ═══════════════════════════════════════════════════════════ */
+
+QMenu {{
+    background-color: {_c["bg_raised"]};
+    border: {_cs["border_w"]}px solid {_c["border"]};
+    color: {_c["text_primary"]};
+    font-size: {_f["sm_body"]}px;
+    padding: {_s["xs"]}px {_s["none"]}px;
+}}
+QMenu::item {{
+    padding: {_s["sm"]}px {_s["lg"]}px;
+}}
+QMenu::item:selected {{
+    background-color: {_c["bg_active"]};
+    color: {_c["accent"]};
 }}
 
 """

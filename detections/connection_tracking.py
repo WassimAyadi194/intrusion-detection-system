@@ -63,11 +63,11 @@ class ConnectionTracker:
     def _classify_novelty(self, src: str, now: float) -> str:
         if _is_loopback(src):
             return "loopback"
+        if src in self.baseline_hosts:
+            return "known"
         count = self._syn_count(src, now)
         if count >= RECURRING_THRESHOLD:
             return "recurring"
-        if src in self.baseline_hosts:
-            return "known"
         return "new"
 
     def _record_syn(self, src: str, now: float) -> None:
@@ -144,26 +144,28 @@ class ConnectionTracker:
             novelty = self._classify_novelty(src, now)
 
             self.connections[key] = now
+            msg = f"Connection detected: {src} -> {dst} [{novelty}]"
             alerts.append({
                 "src":       src,
                 "type":      "connection",
                 "metric":    "new",
                 "severity":  "INFO",
                 "novelty":   novelty,
-                "message":   f"Connection detected: {src} -> {dst} [{novelty}]",
+                "message":   msg,
                 "timestamp": int(now),
             })
 
         elif flags & 0x01:  # FIN — clean completion, do NOT count as failed
             if key in self.connections:
                 del self.connections[key]
+                msg = f"Connection terminated: {src} -> {dst}"
                 alerts.append({
                     "src":       src,
                     "type":      "connection",
                     "metric":    "terminated",
                     "severity":  "INFO",
                     "novelty":   None,
-                    "message":   f"Connection terminated: {src} -> {dst}",
+                    "message":   msg,
                     "timestamp": int(now),
                 })
 
@@ -171,13 +173,14 @@ class ConnectionTracker:
             if key in self.connections:
                 del self.connections[key]
                 self._record_failure(src, now)
+                msg = f"Connection terminated: {src} -> {dst}"
                 alerts.append({
                     "src":       src,
                     "type":      "connection",
                     "metric":    "terminated",
                     "severity":  "INFO",
                     "novelty":   None,
-                    "message":   f"Connection terminated: {src} -> {dst}",
+                    "message":   msg,
                     "timestamp": int(now),
                 })
 

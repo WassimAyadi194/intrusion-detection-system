@@ -12,6 +12,8 @@ log = get_logger(__name__)
 
 
 def main():
+    from config import apply_saved_settings
+    apply_saved_settings()
     initialize_database()
 
     ifaces = get_relevant_interfaces()

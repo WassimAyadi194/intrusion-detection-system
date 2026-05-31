@@ -23,8 +23,8 @@ class StatusBar(QWidget):
         )
         layout.setSpacing(SPACING["none"])
 
-        # Static placeholder text
-        self._status_label = QLabel("●  System OK  |  Queue: 0  |  Uptime: 00:00:00")
+        # Static system label
+        self._status_label = QLabel("●  IDS ACTIVE")
         self._status_label.setObjectName("statusLabel")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 

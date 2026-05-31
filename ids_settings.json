@@ -1,0 +1,29 @@
+{
+  "PACKET_K": 1.0,
+  "PACKET_MIN_GLOBAL_THRESHOLD": 500,
+  "PACKET_WINDOW": 10,
+  "PACKET_SENSITIVITY_PENALTIES": {
+    "novelty_new": 1.0,
+    "high_failure_ratio": 1.0
+  },
+  "PACKET_HIGH_FAILURE_RATIO_THRESHOLD": 0.6,
+  "PORT_SCAN_K": 1.0,
+  "PORT_SCAN_MIN_PORT_SCAN_LIMIT": 10,
+  "PORT_SCAN_MIN_HOST_SCAN_LIMIT": 10,
+  "PORT_SCAN_SENSITIVITY_PENALTIES": {
+    "novelty_new": 1.0,
+    "high_failure_ratio": 1.0
+  },
+  "PORT_SCAN_HIGH_FAILURE_RATIO_THRESHOLD": 1.0,
+  "PORT_SCAN_STATIC_THRESHOLD_PORTS": [
+    443
+  ],
+  "ANOMALY_STD_FLOOR": 1.0,
+  "ANOMALY_MIN_BASELINE_SAMPLES": 10,
+  "ANOMALY_MIN_DELTAS": {
+    "syn_count": 5.0,
+    "unique_ports": 5.0,
+    "unique_destinations": 5.0,
+    "packet_count": 100.0
+  }
+}

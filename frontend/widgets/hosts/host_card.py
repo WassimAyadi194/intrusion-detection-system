@@ -27,11 +27,11 @@ _METRIC_COLS: list[tuple[str, str]] = [
 ]
 
 # Maps _classify_novelty() return value → (QSS objectName, badge label)
+# Note: "loopback" hosts are filtered upstream and never reach HostCard.
 _NOVELTY_BADGE: dict[str, tuple[str, str]] = {
     "known":     ("noveltyBadgeKnown",     "KNOWN"),
     "new":       ("noveltyBadgeNew",       "NEW"),
     "recurring": ("noveltyBadgeRecurring", "RECURRING"),
-    "loopback":  ("noveltyBadgeLoopback",  "LOOPBACK"),
 }
 
 
@@ -44,6 +44,7 @@ class HostCard(QWidget):
         metrics: list[tuple[str, str]],
         baseline_data: dict,
         novelty: str = "",
+        is_active: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -62,17 +63,23 @@ class HostCard(QWidget):
         # ── Row 1: hostname + novelty badge ──────────────────────────────────
         header_row = QHBoxLayout()
         header_row.setSpacing(SPACING["md"])
-        header_row.addWidget(_lbl(host, "hostName"))
+        header_row.addWidget(_lbl(host, "hostName", parent=self))
         header_row.addStretch()
 
         badge_name, badge_text = _badge_style(novelty)
-        self._badge_btn = QPushButton(badge_text)
+        self._badge_btn = QPushButton(badge_text, self)
         self._badge_btn.setObjectName(badge_name)
         self._badge_btn.setFixedWidth(COMPONENT_SIZES["baseline_badge_w"])
         self._badge_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._badge_btn.clicked.connect(self._show_popup)
         self._badge_btn.setVisible(bool(badge_text))
         header_row.addWidget(self._badge_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        act_name, act_text = ("activityBadgeActive", "ACTIVE") if is_active else ("activityBadgeInactive", "INACTIVE")
+        self._activity_btn = QPushButton(act_text, self)
+        self._activity_btn.setObjectName(act_name)
+        self._activity_btn.setFixedWidth(COMPONENT_SIZES["baseline_badge_w"])
+        header_row.addWidget(self._activity_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         layout.addLayout(header_row)
 
@@ -87,15 +94,15 @@ class HostCard(QWidget):
         initial_vals: dict[str, str] = {label: val for label, val in metrics}
 
         for col_label, snap_key in _METRIC_COLS:
-            col = QWidget()
+            col = QWidget(self)
             col.setFixedWidth(COMPONENT_SIZES["metric_col_w"])
             col_layout = QVBoxLayout(col)
             col_layout.setContentsMargins(
                 SPACING["xs"], SPACING["none"], SPACING["xs"], SPACING["none"]
             )
             col_layout.setSpacing(SPACING["xs"])
-            col_layout.addWidget(_lbl(col_label, "metricLabel"))
-            val_lbl = _lbl(initial_vals.get(col_label, "—"), "metricValue")
+            col_layout.addWidget(_lbl(col_label, "metricLabel", parent=self))
+            val_lbl = _lbl(initial_vals.get(col_label, "—"), "metricValue", parent=self)
             col_layout.addWidget(val_lbl)
             self._value_labels[snap_key] = val_lbl
             metrics_row.addWidget(col)
@@ -104,7 +111,7 @@ class HostCard(QWidget):
         layout.addLayout(metrics_row)
 
         # ── Sparkline bar ─────────────────────────────────────────────────────
-        bar = QWidget()
+        bar = QWidget(self)
         bar.setObjectName("sparklineBar")
         bar.setFixedHeight(COMPONENT_SIZES["sparkline_h"])
         layout.addWidget(bar)
@@ -114,6 +121,7 @@ class HostCard(QWidget):
         metrics: list[tuple[str, str]],
         baseline_data: dict,
         novelty: str = "",
+        is_active: bool = False,
     ) -> None:
         """Update displayed values in-place — no widget reconstruction.
 
@@ -135,6 +143,13 @@ class HostCard(QWidget):
             # Re-polish so QSS picks up the new objectName immediately.
             self._badge_btn.style().unpolish(self._badge_btn)
             self._badge_btn.style().polish(self._badge_btn)
+
+        act_name, act_text = ("activityBadgeActive", "ACTIVE") if is_active else ("activityBadgeInactive", "INACTIVE")
+        if self._activity_btn.objectName() != act_name or self._activity_btn.text() != act_text:
+            self._activity_btn.setObjectName(act_name)
+            self._activity_btn.setText(act_text)
+            self._activity_btn.style().unpolish(self._activity_btn)
+            self._activity_btn.style().polish(self._activity_btn)
 
         # Store latest baseline payload for the popup.
         self._baseline_data = baseline_data
