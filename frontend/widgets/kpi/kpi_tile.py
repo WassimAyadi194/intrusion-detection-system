@@ -47,3 +47,9 @@ class KpiTile(QWidget):
     def set_value(self, value: str) -> None:
         """Update the displayed value without rebuilding the widget."""
         self._value_label.setText(value)
+
+    def set_color_class(self, color_class: str) -> None:
+        """Dynamically switch the CSS color class of the big value."""
+        self._value_label.setObjectName(color_class)
+        self._value_label.style().unpolish(self._value_label)
+        self._value_label.style().polish(self._value_label)

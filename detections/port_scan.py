@@ -1,4 +1,3 @@
-# detections/port_scan.py
 import time
 
 import config
@@ -56,59 +55,34 @@ class PortScanDetector:
             self._baselines = get_all_baselines()
             self._baselines_loaded_at = now
 
-    def _penalty_multiplier(self, src: str, now: float) -> float:
-        """
-        Compute the combined sensitivity-penalty multiplier for *src*.
-
-        Fetches host stats from the ConnectionTracker and applies
-        self.sensitivity_penalties multiplicatively.  A value < 1.0 tightens
-        (lowers) the dynamic threshold, making detection more aggressive.
-
-        The novelty_new penalty is applied only when the host is both
-        classified as "new" by the ConnectionTracker AND has no entry in the
-        baseline DB.  A host that has a full baseline entry (mean, std) but
-        happens not to be in baseline_hosts would otherwise be penalised on
-        top of an already well-tuned dynamic threshold — a double-penalty that
-        produces thresholds that are too aggressive.
-        """
-        stats = self.connection_tracker.get_host_stats(src, now)
-        multiplier = 1.0
-
-        # Snapshot the dict reference once to avoid TOCTOU if the settings
-        # panel replaces it between the two reads below.
-        penalties = self.sensitivity_penalties
-
-        # Only penalise truly unknown hosts — those with neither a baseline
-        # DB entry nor enough observed traffic to be classified as recurring.
-        if stats["novelty"] == "new" and self._baselines.get(src) is None:
-            multiplier *= penalties.get("novelty_new", 1.0)
-
-        if stats["failed_connection_ratio"] > self.high_failure_ratio_threshold:
-            multiplier *= penalties.get("high_failure_ratio", 1.0)
-
-        return multiplier
-
     def _get_vertical_threshold(self, src: str, now: float) -> int:
         
         host = self._baselines.get(src)
         if host is None:
-            return self.PORT_THRESHOLD
+            return min(self.PORT_THRESHOLD, max(self.min_port_scan_limit, 1))
 
         mean    = host.get("avg_unique_ports", 0.0) or 0.0
         std     = host.get("std_unique_ports", 0.0) or 0.0
-        dynamic = (mean + (self.k * std)) * self._penalty_multiplier(src, now)
+        penalty_multiplier = self.connection_tracker.compute_penalty_multiplier(
+            src, now, self.sensitivity_penalties, self._baselines, self.high_failure_ratio_threshold
+        )
+        dynamic = (mean + (self.k * std)) * penalty_multiplier
         return max(int(round(dynamic)), max(self.min_port_scan_limit, 1))
 
     def _get_horizontal_threshold(self, src: str, now: float, apply_penalty: bool = True) -> int:
         
         host = self._baselines.get(src)
         if host is None:
-            return self.HOST_THRESHOLD
+            # Honour min_host_scan_limit as the floor even in the no-baseline
+            # fallback path, so that user-configured sensitivity is respected.
+            return min(self.HOST_THRESHOLD, max(self.min_host_scan_limit, 1))
 
         mean    = host.get("avg_unique_destinations", 0.0) or 0.0
         std     = host.get("std_unique_destinations", 0.0) or 0.0
-        penalty = self._penalty_multiplier(src, now) if apply_penalty else 1.0
-        dynamic = (mean + (self.k * std)) * penalty
+        penalty_multiplier = self.connection_tracker.compute_penalty_multiplier(
+            src, now, self.sensitivity_penalties, self._baselines, self.high_failure_ratio_threshold
+        ) if apply_penalty else 1.0
+        dynamic = (mean + (self.k * std)) * penalty_multiplier
         return max(int(round(dynamic)), max(self.min_host_scan_limit, 1))
 
     def analyze_packet(self, pkt) -> list[dict] | None:
@@ -202,6 +176,7 @@ class PortScanDetector:
                 "src":       src,
                 "type":      "port_scan",
                 "metric":    "horizontal",
+                "port":      dport,
                 "severity":  "HIGH",
                 "message":   msg,
                 "timestamp": int(now),

@@ -292,6 +292,7 @@ class DashboardPage(QWidget):
         for tile, (_, _, _, key) in zip(self._kpi_tiles, self._KPI_DEFS):
             if key == "capture_state":
                 tile.set_value("STOPPED")
+                tile.set_color_class("kpiValueRed")
             elif key == "_queue_depth":
                 tile.set_value("0 / 0")
             else:
@@ -314,3 +315,7 @@ class DashboardPage(QWidget):
                 value = str(raw)
 
             tile.set_value(value)
+            
+            # Revert the color to green if it was running.
+            if key == "capture_state" and value != "—":
+                tile.set_color_class("kpiValueGreen")

@@ -55,12 +55,8 @@ class AlertFeed(QWidget):
         self._filter.text_input.textChanged.connect(self._apply_filter)
         outer.addWidget(self._filter)
 
-        # ── Scroll content: ONLY real AlertEntry rows live here ──────────────
-        # Neither the waiting label nor the empty label are ever added to
-        # _vbox. Keeping state labels out of the scroll layout prevents them
-        # from participating in the inner widget's sizeHint / minimumSizeHint
-        # calculation — which was causing Qt to stop activating the scrollbar
-        # at ~21 entries because the viewport height appeared "satisfied".
+        # croll content: ONLY  AlertEntry rows live here
+
         self._inner = QWidget()
         self._inner.setObjectName("scrollInner")
         self._vbox = QVBoxLayout(self._inner)
@@ -83,7 +79,7 @@ class AlertFeed(QWidget):
         stacked = QStackedLayout(overlay)
         stacked.setStackingMode(QStackedLayout.StackingMode.StackAll)
 
-        # Layer 0: scroll area — always fills the full area
+        # Layer 0: scroll area — always fills the full area 
         stacked.addWidget(self._scroll)
 
         # Layer 1: "Waiting for traffic…" — visible until first alert arrives

@@ -6,31 +6,6 @@ Single source of truth for all design tokens.
 Import everywhere as:
     from frontend.theme import COLORS, SPACING, FONT, LAYOUT_SIZES, COMPONENT_SIZES
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ENFORCEMENT RULES — VIOLATIONS ARE ARCHITECTURAL ERRORS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-1. NO raw pixel values anywhere in the project.
-   ✗ setFixedHeight(40)          ✓ setFixedHeight(LAYOUT_SIZES["panel_header_h"])
-   ✗ padding: 12px               ✓ padding: 0 {SPACING["lg"]}px
-   ✗ max-width: 38px             ✓ max-width: {COMPONENT_SIZES["badge_w"]}px
-
-2. NO arithmetic expressions on tokens in QSS or Python.
-   ✗ font-size: {F["md"] - 1}px  ✓ use the correct named token (e.g. F["sm_body"])
-   ✗ SPACING["md"] + 4           ✓ define a new token if the value is needed
-
-3. NO mixing layout and component sizing in one namespace.
-   LAYOUT_SIZES    → structural containers: rows, panels, sidebars, page areas
-   COMPONENT_SIZES → small internal UI: badges, icons, sparklines, inline indicators
-
-4. Token naming must NOT couple to specific widgets.
-   ✗ alert_entry_h, host_card_h  ✓ row_h, card_h  (shared across components)
-
-5. COLORS owns visual semantics only — no pixel or layout values.
-6. SPACING owns margins/padding/gaps only — no colors or font sizes.
-7. FONT owns text sizes only — no colors or layout dimensions.
-
-Run scripts/enforce_tokens.py to validate all rules automatically.
 """
 
 # ── Color Palette ──────────────────────────────────────────────────────────
@@ -61,8 +36,8 @@ COLORS: dict[str, str] = {
     # Accents
     "accent":       "#00D4FF",   # primary brand accent — active nav, panel titles, links
     "accent_green":  "#3ECC8A",   # success / running / low-severity
-    "accent_amber":  "#F59E0B",   # warning / medium-severity (MED badge)
-    "accent_orange": "#D97706",   # high-severity (HIGH badge — darker orange)
+    "accent_amber":  "#fca800",   # warning / medium-severity (MED badge)
+    "accent_orange": "#fc6203",   # high-severity (HIGH badge — darker orange)
     "accent_red":    "#EF4444",   # critical-severity (CRITICAL badge)
 
     # Structural
@@ -107,7 +82,7 @@ SPACING: dict[str, int] = {
 FONT: dict[str, int] = {
     "xs":      10,
     "sm":      11,
-    "sm_body": 12,   # de-emphasised body — sits between sm and md; never compute md-1
+    "sm_body": 12, 
     "md":      13,
     "lg":      14,
     "xl":      16,
@@ -120,11 +95,6 @@ FONT: dict[str, int] = {
 #
 # Structural layout dimensions for containers, panels, rows, and sidebars.
 # These govern the OUTER SHELL of UI regions — not internal component details.
-#
-# Rules:
-#   - Use LAYOUT_SIZES for: setFixedHeight / setFixedWidth on containers
-#   - Names must be GENERIC (not widget-specific): row_h, card_h, not alert_entry_h
-#   - Never mix COMPONENT_SIZES values here
 
 LAYOUT_SIZES: dict[str, int] = {
     "panel_header_h":       40,   # shared height for all panel header bars
@@ -147,11 +117,7 @@ LAYOUT_SIZES: dict[str, int] = {
 #
 # Small internal UI element constraints — NOT structural layout.
 # Used inside components: badges, sparklines, icons, inline indicators.
-#
-# Rules:
-#   - Use COMPONENT_SIZES for: small QLabel fixed widths, icon sizes, bar heights
-#   - Never govern outer containers or page regions from here
-#   - Names reflect the element role, not the owning widget
+
 
 COMPONENT_SIZES: dict[str, int] = {
     "badge_w":            38,   # severity badge visual width (HIGH / MED / LOW / INFO labels)

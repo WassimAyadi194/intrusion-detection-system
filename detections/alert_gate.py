@@ -136,8 +136,19 @@ class AlertGate:
 
     @staticmethod
     def _dedup_key(alert: dict) -> tuple:
+        # For horizontal port-scan alerts, include the scanned port so that
+        # a port-80 alert doesn't suppress a port-443 alert within the cooldown.
+        # Exception: loopback sources use ephemeral ports that change every
+        # connection, so excluding the port lets LOOPBACK_COOLDOWN_DEFAULT work.
+        is_horizontal = alert.get("metric") == "horizontal"
+        src = alert.get("src", "")
+        if is_horizontal and not _is_loopback(src):
+            port = alert.get("port")
+        else:
+            port = None
         return (
-            alert.get("src", ""),
+            src,
             alert.get("type", ""),
             alert.get("metric") or "",
+            port,
         )

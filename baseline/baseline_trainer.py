@@ -26,10 +26,6 @@ def _ema(old: float, new: float, alpha: float = BASELINE_EMA_ALPHA) -> float:
     """
     Blend *new* into *old* using EMA:
         result = (1 - alpha) * old + alpha * new
-
-    A small alpha (e.g. 0.1) means 90 % of the stored value is preserved on
-    each retraining cycle, so the baseline adapts slowly and is resistant to
-    transient spikes.
     """
     return (1.0 - alpha) * old + alpha * new
 
@@ -123,7 +119,7 @@ def train_baseline(host_ip: str | None = None, only_existing: bool = False):
 
             mode = "EMA"
         else:
-            # ── Cold start: no prior record — use fresh values directly ────────
+            # Cold start: no prior record — use fresh values directly
             avg_syn,   std_syn   = new_avg_syn,   new_std_syn
             avg_ports, std_ports = new_avg_ports, new_std_ports
             avg_dests, std_dests = new_avg_dests, new_std_dests

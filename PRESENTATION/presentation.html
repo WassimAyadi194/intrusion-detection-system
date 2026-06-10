@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Design and Implementation of a Hybrid IDS</title>
+<style>
+    :root {
+        --bg-void: #080C16;
+        --bg-base: #0B0F1A;
+        --bg-surface: #0D1120;
+        --bg-raised: #111827;
+        --bg-active: #162033;
+        --bg-hover: #1A2236;
+        --border: #1E2A45;
+        --text-primary: #E2E8F0;
+        --text-muted: #94A3B8;
+        --text-dim: #334155;
+        --accent: #00D4FF;
+        --accent-green: #3ECC8A;
+        --accent-amber: #fca800;
+        --accent-orange: #fc6203;
+        --accent-red: #EF4444;
+        --sparkline-bg: #1E2A45;
+    }
+    
+    body {
+        margin: 0;
+        padding: 0;
+        background-color: var(--bg-base);
+        color: var(--text-primary);
+        font-family: 'Segoe UI', system-ui, sans-serif;
+        overflow: hidden;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    h1, h2, h3 { color: var(--accent); margin-top: 0; }
+    h1, h2 { text-shadow: 0 0 20px rgba(0,212,255,0.3); }
+    code { font-family: 'Courier New', monospace; color: var(--accent-green); background: var(--bg-void); padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 1.1em;}
+    
+    .progress-container { width: 100%; height: 4px; background: var(--bg-void); position: fixed; top: 0; left: 0; z-index: 100; }
+    .progress-bar { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; box-shadow: 0 0 10px var(--accent); }
+    
+    .presentation-container { flex: 1; position: relative; width: 100%; height: calc(100vh - 60px); }
+    
+    .slide {
+        position: absolute;
+        top: 0; left: 0; width: 100%; height: 100%;
+        padding: 40px 80px; box-sizing: border-box;
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 0.3s ease, transform 0.3s ease;
+        visibility: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+    
+    .slide.active { opacity: 1; transform: translateY(0); visibility: visible; }
+    
+    .slide-header {
+        background: var(--bg-void);
+        padding: 15px 25px;
+        border-bottom: 1px solid var(--border);
+        border-radius: 8px 8px 0 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 30px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+    }
+    .slide-header h2 { margin: 0; font-size: 28px; }
+    .sprint-badge { background: var(--bg-surface); padding: 5px 12px; border-radius: 4px; border: 1px solid var(--border); color: var(--text-muted); font-size: 14px; font-weight: bold;}
+    
+    .content-card {
+        flex: 1;
+        overflow-y: auto;
+        padding: 10px;
+    }
+    
+    /* New Shape & Card Stylings */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+    
+    .info-card {
+        background: var(--bg-surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .info-card.row { flex-direction: row; align-items: flex-start; }
+    
+    .info-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,212,255,0.1);
+        border-color: var(--accent);
+    }
+
+    .info-card p { margin: 0; font-size: 17px; line-height: 1.6; color: var(--text-primary); }
+    
+    .number-circle {
+        background: var(--bg-void);
+        border: 2px solid var(--accent);
+        color: var(--accent);
+        min-width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 20px;
+        font-weight: bold;
+        box-shadow: 0 0 10px rgba(0,212,255,0.2);
+        flex-shrink: 0;
+    }
+    
+    .icon-circle {
+        background: var(--bg-void);
+        border: 2px solid var(--accent-green);
+        color: var(--accent-green);
+        min-width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        font-size: 18px;
+        font-weight: bold;
+        flex-shrink: 0;
+    }
+
+    .chevron-card {
+        background: var(--bg-surface);
+        border-left: 4px solid var(--accent);
+        padding: 20px 30px;
+        border-radius: 0 8px 8px 0;
+        margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 25px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+        transition: transform 0.2s;
+    }
+    .chevron-card:hover { transform: translateX(5px); border-color: var(--accent-green); }
+    
+    .block-card {
+        background: var(--bg-void);
+        border-top: 3px solid var(--accent);
+        padding: 20px;
+        border-radius: 4px;
+        text-align: center;
+    }
+
+    .badge { padding: 4px 12px; border-radius: 999px; font-size: 14px; font-weight: bold; color: #fff; display: inline-block; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); }
+    .badge.low { background: var(--accent-green); border: 1px solid #2da66f; }
+    .badge.medium { background: var(--accent-amber); border: 1px solid #d99000; }
+    .badge.high { background: var(--accent-orange); border: 1px solid #d45000; }
+    .badge.critical { background: var(--accent-red); border: 1px solid #cc3333; }
+    
+    .nav-bar {
+        height: 60px; background: var(--bg-void); border-top: 1px solid var(--border);
+        display: flex; justify-content: space-between; align-items: center; padding: 0 40px;
+        position: fixed; bottom: 0; width: 100%; box-sizing: border-box; z-index: 100;
+    }
+    .nav-btn {
+        background: var(--bg-raised); color: var(--accent); border: 1px solid var(--border);
+        padding: 8px 24px; border-radius: 4px; cursor: pointer; font-size: 16px; transition: all 0.2s; font-weight: bold;
+    }
+    .nav-btn:hover { background: var(--bg-hover); box-shadow: 0 0 10px rgba(0,212,255,0.2); }
+    .slide-counter { color: var(--text-muted); font-size: 15px; font-family: monospace; }
+    
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 16px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); border-radius: 8px; overflow: hidden;}
+    th, td { border: 1px solid var(--border); padding: 15px; text-align: left; }
+    th { background: var(--bg-raised); color: var(--accent); font-weight: bold; }
+    tr { background: var(--bg-surface); }
+    tr:nth-child(even) { background: var(--bg-void); }
+    
+    .arch-diagram { display: flex; flex-direction: column; align-items: center; margin-top: 10px; width: 100%; }
+    .arch-layer { 
+        background: var(--bg-surface); border: 2px solid var(--border); padding: 12px 30px; 
+        border-radius: 8px; text-align: center; width: 60%; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        font-weight: bold; color: var(--accent); letter-spacing: 1px;
+    }
+    .arch-arrow { color: var(--text-muted); font-size: 24px; font-weight: bold; margin: 4px 0; }
+    
+    .flex-row { display: flex; gap: 30px; height: 100%; }
+    .flex-col { display: flex; flex-direction: column; gap: 20px; flex: 1; }
+    .flex-2 { flex: 2; }
+    
+    .img-container { flex: 1; display: flex; justify-content: center; align-items: center; background: var(--bg-void); border: 1px solid var(--border); border-radius: 8px; padding: 15px; overflow: hidden; }
+    .img-container img { max-width: 100%; max-height: 100%; object-fit: contain; filter: drop-shadow(0 0 10px rgba(0,212,255,0.1)); }
+    
+    .title-slide { justify-content: center; align-items: center; text-align: center; padding: 0 10%; position: relative;}
+    .title-slide h1 { font-size: 52px; margin-bottom: 15px; line-height: 1.2; }
+    .title-slide h3 { color: var(--text-muted); font-size: 26px; margin-bottom: 30px; font-weight: normal; }
+    .title-meta { font-size: 22px; color: #FFFFFF; line-height: 1.8; background: rgba(13, 17, 32, 0.8); padding: 25px; border-radius: 12px; border: 1px solid var(--border); display: inline-block; text-align: left; box-shadow: 0 10px 30px rgba(0,0,0,0.5);}
+    .title-meta p { margin: 5px 0; }
+    
+    .logo-header { position: absolute; top: 40px; left: 80px; right: 80px; display: flex; justify-content: space-between; align-items: center; }
+    .logo-header img { height: 90px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; }
+</style>
+</head>
+<body>
+
+<div class="progress-container"><div class="progress-bar" id="progressBar"></div></div>
+
+<div class="presentation-container" id="presentation">
+
+    <!-- Slide 1: Title Slide -->
+    <div class="slide title-slide">
+        <div class="logo-header">
+            <img src="./UTM.png" alt="UTM Logo">
+            <img src="./FST.png" alt="FST Logo">
+        </div>
+        <h1 style="margin-top: 80px;">Design and Implementation of a Hybrid Intrusion Detection System</h1>
+        <h3>Academic Graduation Project Defense</h3>
+        <div class="title-meta">
+            <p><strong>Author:</strong> AYADI Wassim <span style="color: var(--text-muted); font-size: 18px;">(GLSI3 — 3226052)</span></p>
+            <p><strong>Institution:</strong> Faculty of Sciences of Tunis El Manar</p>
+            <p><strong>Supervisor:</strong> Ms. Naama Amdouni</p>
+            <hr style="border-color: var(--border); margin: 15px 0;">
+            <p style="font-size: 18px;"><strong>Jury President:</strong> Ms. Zekri Manel &nbsp;&nbsp;|&nbsp;&nbsp; <strong>Reporter:</strong> Ms. Riahi Ines</p>
+            <p style="font-size: 16px; color: var(--accent-green);">Defense Date: June 11, 2026 &nbsp;&nbsp;|&nbsp;&nbsp; Academic Year: 2025–2026</p>
+        </div>
+    </div>
+
+    <!-- Slide 2: Agenda -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Agenda</h2>
+        </div>
+        <div class="content-card" style="display: flex; flex-direction: column; justify-content: center; padding: 0 10%;">
+            <div class="chevron-card">
+                <div class="number-circle">1</div>
+                <h2 style="margin:0; color: #fff;">Introduction</h2>
+            </div>
+            <div class="chevron-card">
+                <div class="number-circle">2</div>
+                <h2 style="margin:0; color: #fff;">General Context</h2>
+            </div>
+            <div class="chevron-card">
+                <div class="number-circle">3</div>
+                <h2 style="margin:0; color: #fff;">Project Preparation</h2>
+            </div>
+            <div class="chevron-card">
+                <div class="number-circle">4</div>
+                <h2 style="margin:0; color: #fff;">Sprints and Implementation</h2>
+            </div>
+            <div class="chevron-card">
+                <div class="number-circle">5</div>
+                <h2 style="margin:0; color: #fff;">Conclusion and Future Improvements</h2>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 3: Host Organization -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Host Organization</h2>
+        </div>
+        <div class="content-card flex-row" style="align-items: stretch;">
+            <div class="flex-col flex-2" style="justify-content: center;">
+                <div class="info-card row">
+                    <div class="icon-circle">🏢</div>
+                    <div>
+                        <strong style="font-size: 22px; color: var(--accent);">Faculty of Sciences of Tunis El Manar (FST)</strong>
+                        <p style="margin-top: 10px; color: var(--text-muted);">A premier academic institution fostering innovation in Computer Science, engineering, and Information Security research.</p>
+                    </div>
+                </div>
+                <div class="info-card row">
+                    <div class="icon-circle">🎓</div>
+                    <div>
+                        <strong style="font-size: 22px; color: var(--accent);">University of Tunis El Manar (UTM)</strong>
+                        <p style="margin-top: 10px; color: var(--text-muted);">Providing the academic framework, rigorous standards, and resources necessary for advanced engineering graduation projects.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="img-container" style="flex-direction: column; gap: 40px; background: var(--bg-surface);">
+                <img src="./UTM.png" alt="UTM Logo" style="height: 140px;">
+                <img src="./FST.png" alt="FST Logo" style="height: 140px;">
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 4: Introduction -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Introduction</h2>
+        </div>
+        <div class="content-card grid-2">
+            <div class="info-card">
+                <h3 style="margin-bottom: 10px;">Evolving Cyber Threat Landscape</h3>
+                <p>Network attacks are growing in volume and sophistication, consistently bypassing traditional perimeter defenses.</p>
+            </div>
+            <div class="info-card">
+                <h3 style="margin-bottom: 10px;">Critical Need for Visibility</h3>
+                <p>Organizations require deep, real-time network observability to detect breaches in progress before exfiltration occurs.</p>
+            </div>
+            <div class="info-card">
+                <h3 style="margin-bottom: 10px;">The Role of IDS</h3>
+                <p>Intrusion Detection Systems (IDS) serve as the vital internal alarm system for network infrastructures, bridging the gap left by firewalls.</p>
+            </div>
+            <div class="info-card" style="border-color: var(--accent);">
+                <h3 style="margin-bottom: 10px;">Project Context</h3>
+                <p>Developed at FST (Feb–May 2026) to engineer a modern, lightweight, and adaptive detection engine suitable for rapid deployment.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 5: Problem Statement -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Problem Statement</h2>
+        </div>
+        <div class="content-card grid-2">
+            <div class="info-card row">
+                <div class="icon-circle" style="color: var(--accent-red); border-color: var(--accent-red);">✗</div>
+                <div>
+                    <h3 style="margin-bottom: 5px;">Signature-Only Limitations</h3>
+                    <p>Traditional systems (e.g., standard Snort rules) fail against zero-day exploits and highly obfuscated, custom attacks.</p>
+                </div>
+            </div>
+            <div class="info-card row">
+                <div class="icon-circle" style="color: var(--accent-red); border-color: var(--accent-red);">✗</div>
+                <div>
+                    <h3 style="margin-bottom: 5px;">Anomaly-Only Drawbacks</h3>
+                    <p>Purely behavioral systems often generate unacceptable rates of false positives and are computationally heavy to train.</p>
+                </div>
+            </div>
+            <div class="info-card row">
+                <div class="icon-circle" style="color: var(--accent-amber); border-color: var(--accent-amber);">!</div>
+                <div>
+                    <h3 style="margin-bottom: 5px;">The Observability Gap</h3>
+                    <p>Many open-source tools lack intuitive, real-time observability without relying on heavy external dependencies (like ELK stacks).</p>
+                </div>
+            </div>
+            <div class="info-card row" style="background: var(--bg-active); border-color: var(--accent);">
+                <div class="icon-circle" style="color: var(--accent); border-color: var(--accent);">💡</div>
+                <div>
+                    <h3 style="margin-bottom: 5px;">The Requirement</h3>
+                    <p>A need for a self-contained, <strong>Hybrid Approach</strong> balancing precision (signatures) with adaptability (behavioral analysis).</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 6: Existing Systems: IDS Taxonomy -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Existing Systems: IDS Taxonomy</h2>
+        </div>
+        <div class="content-card">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Category</th>
+                        <th>Definition</th>
+                        <th>Strengths</th>
+                        <th>Weaknesses</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>HIDS</strong> <br><span style="font-size:12px;color:var(--text-muted)">Data Source</span></td>
+                        <td>Monitors individual host logs/files</td>
+                        <td>High accuracy for local events</td>
+                        <td>Blind to broader network context</td>
+                    </tr>
+                    <tr>
+                        <td><strong>NIDS</strong> <br><span style="font-size:12px;color:var(--text-muted)">Data Source</span></td>
+                        <td>Analyzes network traffic passively</td>
+                        <td>Broad visibility, stealthy</td>
+                        <td>Struggles with encrypted payloads</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Misuse / Signature</strong> <br><span style="font-size:12px;color:var(--text-muted)">Mechanism</span></td>
+                        <td>Matches traffic against known attack patterns</td>
+                        <td>Near-zero false positives for known threats</td>
+                        <td>Useless against zero-day attacks</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Anomaly</strong> <br><span style="font-size:12px;color:var(--text-muted)">Mechanism</span></td>
+                        <td>Flags deviations from a statistical baseline</td>
+                        <td>Can catch novel, unknown attacks</td>
+                        <td>High false positive rate initially</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Slide 7: Proposed Solution -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Proposed Solution</h2>
+        </div>
+        <div class="content-card flex-row">
+            <div class="flex-col">
+                <div class="info-card row">
+                    <div class="number-circle" style="width: 30px; height: 30px; min-width: 30px; font-size: 16px;">1</div>
+                    <div>
+                        <strong style="color: var(--accent); font-size: 18px;">Hybrid Architecture</strong>
+                        <p>Combines deterministic rule-matching with adaptive behavioral profiling in a single, unified engine.</p>
+                    </div>
+                </div>
+                <div class="info-card row">
+                    <div class="number-circle" style="width: 30px; height: 30px; min-width: 30px; font-size: 16px;">2</div>
+                    <div>
+                        <strong style="color: var(--accent); font-size: 18px;">Lightweight Design</strong>
+                        <p>Python-based engine avoiding the bloat of enterprise SIEMs for immediate local deployment.</p>
+                    </div>
+                </div>
+                <div class="info-card row">
+                    <div class="number-circle" style="width: 30px; height: 30px; min-width: 30px; font-size: 16px;">3</div>
+                    <div>
+                        <strong style="color: var(--accent); font-size: 18px;">Real-Time Analysis</strong>
+                        <p>Live packet capture integrated directly into time-window aggregation for immediate metrics.</p>
+                    </div>
+                </div>
+                <div class="info-card row">
+                    <div class="number-circle" style="width: 30px; height: 30px; min-width: 30px; font-size: 16px;">4</div>
+                    <div>
+                        <strong style="color: var(--accent); font-size: 18px;">Integrated UI</strong>
+                        <p>A custom PySide6 graphical dashboard providing instant filtering, visualization, and runtime control.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 8: Objectives & Functional Requirements -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Objectives & Functional Requirements</h2>
+        </div>
+        <div class="content-card flex-row">
+            <div class="flex-col flex-2">
+                <div class="info-card">
+                    <h3 style="margin-bottom: 5px;">Key Functional Requirements (FRs)</h3>
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <div style="display:flex; gap:10px;"><span style="color:var(--accent)">•</span> <p>Real-time packet sniffing and filtering.</p></div>
+                        <div style="display:flex; gap:10px;"><span style="color:var(--accent)">•</span> <p>Detection of port scans and volumetric floods.</p></div>
+                        <div style="display:flex; gap:10px;"><span style="color:var(--accent)">•</span> <p>Dynamic profiling of per-host behavior.</p></div>
+                        <div style="display:flex; gap:10px;"><span style="color:var(--accent)">•</span> <p>Suppression of alert storms (AlertGate).</p></div>
+                        <div style="display:flex; gap:10px;"><span style="color:var(--accent)">•</span> <p>Live parameter tuning via GUI.</p></div>
+                    </div>
+                </div>
+                <div class="info-card">
+                    <h3 style="margin-bottom: 5px;">Non-Functional Requirements (NFRs)</h3>
+                    <div class="grid-3" style="margin-top: 10px;">
+                        <div class="block-card">
+                            <strong style="color:var(--accent)">Real-time</strong><p style="font-size: 14px;">Near-zero queue latency</p>
+                        </div>
+                        <div class="block-card">
+                            <strong style="color:var(--accent)">Reliability</strong><p style="font-size: 14px;">Crash recovery & DB WAL</p>
+                        </div>
+                        <div class="block-card">
+                            <strong style="color:var(--accent)">Modular</strong><p style="font-size: 14px;">Extensible OOP architecture</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="img-container">
+                <img src="./image2.png" alt="Global Use Case Diagram">
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 9: Methodology -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Methodology</h2>
+        </div>
+        <div class="content-card">
+            <div class="grid-2" style="margin-bottom: 20px;">
+                <div class="info-card row">
+                    <div class="icon-circle">🔄</div>
+                    <div>
+                        <strong style="font-size: 18px; color: var(--accent);">Framework & Timeline</strong>
+                        <p>Agile/Scrum adapted for a single-developer environment. 4 Sprints, spanning 4 weeks each.</p>
+                    </div>
+                </div>
+                <div class="info-card row">
+                    <div class="icon-circle">👥</div>
+                    <div>
+                        <strong style="font-size: 18px; color: var(--accent);">Roles</strong>
+                        <p>Developer: Wassim AYADI <br> Scrum Master/PO: Ms. Naama Amdouni</p>
+                    </div>
+                </div>
+            </div>
+            
+            <h3 style="margin-top: 20px; text-align: center;">Delivery Flow</h3>
+            <div class="grid-4" style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px;">
+                <div class="block-card">
+                    <div style="color:var(--accent-green); font-weight:bold; margin-bottom:5px;">Sprint 1</div>
+                    <strong style="color:white;">Foundation</strong>
+                    <p style="font-size: 14px;">Capture & Signatures</p>
+                </div>
+                <div class="block-card">
+                    <div style="color:var(--accent-green); font-weight:bold; margin-bottom:5px;">Sprint 2</div>
+                    <strong style="color:white;">Intelligence</strong>
+                    <p style="font-size: 14px;">Baselines & Anomalies</p>
+                </div>
+                <div class="block-card">
+                    <div style="color:var(--accent-green); font-weight:bold; margin-bottom:5px;">Sprint 3</div>
+                    <strong style="color:white;">Optimization</strong>
+                    <p style="font-size: 14px;">TShark & Reliability</p>
+                </div>
+                <div class="block-card">
+                    <div style="color:var(--accent-green); font-weight:bold; margin-bottom:5px;">Sprint 4</div>
+                    <strong style="color:white;">Observability</strong>
+                    <p style="font-size: 14px;">PySide6 GUI & Admin</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 10: System Architecture -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>System Architecture</h2>
+        </div>
+        <div class="content-card">
+            <div class="arch-diagram">
+                <div class="arch-layer">1. Network Traffic (Physical/Virtual Interface)</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-layer">2. Packet Capture Layer (TShark Subprocess + BPF)</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-layer">3. Live Metrics Collection (10s Tumbling Windows)</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-layer">4. Data Persistence (SQLite WAL Mode)</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-layer">5. Hybrid Engine (Signature Detectors + Anomaly Profiler)</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-layer">6. Observability Layer (PySide6 Real-Time GUI)</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 11: Technologies Used -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Technologies Used</h2>
+        </div>
+        <div class="content-card grid-3">
+            <div class="info-card">
+                <strong style="color:var(--accent); font-size: 18px;">Core Logic</strong>
+                <p><code>Python 3.10+</code> chosen for rapid prototyping and extensive security libraries.</p>
+            </div>
+            <div class="info-card">
+                <strong style="color:var(--accent); font-size: 18px;">Packet Capture</strong>
+                <p><code>TShark</code> (C-native backend for performance) interfaced via Python subprocess.</p>
+            </div>
+            <div class="info-card">
+                <strong style="color:var(--accent); font-size: 18px;">Packet Parsing</strong>
+                <p><code>Scapy</code> utilized strictly at the analysis layer for deep packet inspection.</p>
+            </div>
+            <div class="info-card">
+                <strong style="color:var(--accent); font-size: 18px;">Database</strong>
+                <p><code>SQLite 3</code> in WAL (Write-Ahead Logging) mode to prevent lock contention under concurrent writes.</p>
+            </div>
+            <div class="info-card">
+                <strong style="color:var(--accent); font-size: 18px;">Graphical Interface</strong>
+                <p><code>PySide6</code> (Qt for Python) providing a modern, threaded, reactive UI.</p>
+            </div>
+            <div class="info-card">
+                <strong style="color:var(--accent); font-size: 18px;">Concurrency</strong>
+                <p>Native Python <code>threading</code> and thread-safe queues for decoupling capture, analysis, and rendering.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 12: Sprint 1 — Core Capture & Signature Detection -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Sprint 1: Core Capture & Signature Detection</h2>
+            <span class="sprint-badge">Sprint 1 / 4</span>
+        </div>
+        <div class="content-card flex-row">
+            <div class="flex-col flex-2">
+                <div class="info-card row">
+                    <div class="icon-circle">🏗️</div>
+                    <div>
+                        <strong style="color: var(--accent); font-size: 18px;">4-Module OOP Architecture</strong>
+                        <p>Strict separation of Capture, Detection Engine, Data Models, and Main processes.</p>
+                    </div>
+                </div>
+                <div class="info-card row">
+                    <div class="icon-circle">🛡️</div>
+                    <div>
+                        <strong style="color: var(--accent); font-size: 18px;">Signature Detectors Built</strong>
+                        <div style="display: flex; flex-direction: column; gap: 5px; margin-top: 5px;">
+                            <p><strong>Vertical Scan:</strong> Single host scanning multiple ports.</p>
+                            <p><strong>Horizontal Scan:</strong> Single port scanned across multiple hosts.</p>
+                            <p><strong>SYN Flood:</strong> Volumetric exhaustion tracking.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-2">
+                    <div class="block-card">
+                        <strong style="color:var(--accent)">BPF Filtering</strong><p style="font-size: 14px;">Kernel-level traffic pre-filtering</p>
+                    </div>
+                    <div class="block-card">
+                        <strong style="color:var(--accent)">Console Output</strong><p style="font-size: 14px;">Validating logic pre-GUI</p>
+                    </div>
+                </div>
+            </div>
+            <div class="img-container">
+                <img src="./image1.png" alt="Class Diagram">
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 13: Sprint 2 — Behavioral Baselines & Anomaly Detection -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Sprint 2: Behavioral Baselines</h2>
+            <span class="sprint-badge">Sprint 2 / 4</span>
+        </div>
+        <div class="content-card flex-row">
+            <div class="flex-col flex-2">
+                <div class="info-card">
+                    <strong style="color: var(--accent); font-size: 18px;">Tumbling Windows & Metrics</strong>
+                    <p>Traffic aggregated into discrete 10-second blocks. Tracking SYN counts, unique dst ports, unique dst hosts, and total packets.</p>
+                </div>
+                <div class="info-card">
+                    <strong style="color: var(--accent); font-size: 18px;">EMA Smoothing</strong>
+                    <p>Adapts baseline progressively while smoothing noise.</p>
+                    <code style="margin-top: 5px; display: inline-block;">EMAₜ = (1−α) · EMAₜ₋₁ + α · xₜ</code>
+                </div>
+                <div class="info-card">
+                    <strong style="color: var(--accent); font-size: 18px;">Z-Score Anomaly Trigger</strong>
+                    <p>Measures standard deviations from the mean to detect behavioral spikes.</p>
+                    <code style="margin-top: 5px; display: inline-block;">Zₕ = (valueₕ,ₜ − μₕ) / σₕ</code>
+                    <p style="font-size: 14px; color: var(--text-muted); margin-top: 8px;">Standard Deviation: <code>σₕ = √( Σ(xᵢ − μ)² / N )</code> (floor σ_eff = max(σ, 1.0))</p>
+                </div>
+            </div>
+            <div class="flex-col flex-2">
+                <div class="img-container">
+                    <img src="./EMA graph comparison.png" alt="EMA Smoothing Graph">
+                </div>
+                <div class="block-card" style="padding: 10px;">
+                    <strong style="color:var(--accent)">Severity Tiering</strong>
+                    <p style="margin-top: 10px;">
+                        <span class="badge low">LOW</span> (Z≥1.5) &nbsp;
+                        <span class="badge medium">MEDIUM</span> (Z≥2.5)<br><br>
+                        <span class="badge high">HIGH</span> (Z≥3.0) &nbsp;
+                        <span class="badge critical">CRITICAL</span> (Z≥4.0)
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 14: Sprint 3 — Engine Optimization & Reliability -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Sprint 3: Optimization & Reliability</h2>
+            <span class="sprint-badge">Sprint 3 / 4</span>
+        </div>
+        <div class="content-card">
+            <div class="grid-3" style="margin-bottom: 20px;">
+                <div class="info-card">
+                    <strong style="color: var(--accent);">TShark Migration</strong>
+                    <p>Replaced Scapy capture with TShark subprocess, drastically reducing CPU overhead via C-native parsing.</p>
+                </div>
+                <div class="info-card">
+                    <strong style="color: var(--accent);">AlertGate Engine</strong>
+                    <p>Deduplication using composite keys and severity-tiered cooldowns to prevent UI-freezing alert storms.</p>
+                </div>
+                <div class="info-card">
+                    <strong style="color: var(--accent);">System Resilience</strong>
+                    <p>Queue backpressure logic, auto-restart on capture crash, and system heartbeat monitoring.</p>
+                </div>
+            </div>
+            <h3 style="margin-top: 10px;">Empirical Calibration Results</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Parameter</th>
+                        <th>Target Detector</th>
+                        <th>Calibrated Value</th>
+                        <th>Effect</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>k-factor</code></td>
+                        <td>Scans / Floods</td>
+                        <td><code>2.0</code></td>
+                        <td>Balances sensitivity for volumetric attacks</td>
+                    </tr>
+                    <tr>
+                        <td><code>k-factor</code></td>
+                        <td>Anomaly Profiler</td>
+                        <td><code>1.0</code></td>
+                        <td>Allows standard Z-score tiering to function</td>
+                    </tr>
+                    <tr>
+                        <td><code>STD Floor</code></td>
+                        <td>Anomaly Profiler</td>
+                        <td><code>1.0</code></td>
+                        <td>Prevents divide-by-zero during flat traffic</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Slide 15: Sprint 4 — Graphical Interface -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Sprint 4: Graphical Interface</h2>
+            <span class="sprint-badge">Sprint 4 / 4</span>
+        </div>
+        <div class="content-card flex-row">
+            <div class="flex-col">
+                <div class="info-card row">
+                    <div class="icon-circle">🖥️</div>
+                    <div>
+                        <strong style="color: var(--accent); font-size: 18px;">PySide6 Dashboard</strong>
+                        <p>A reactive, dark-themed command center decoupled from the core engine via thread-safe shared queues.</p>
+                    </div>
+                </div>
+                
+                <div class="grid-2">
+                    <div class="info-card">
+                        <strong style="color: var(--accent);">KPI Panel</strong>
+                        <p>Live throughput, active connections, and database health metrics.</p>
+                    </div>
+                    <div class="info-card">
+                        <strong style="color: var(--accent);">Live Alert Feed</strong>
+                        <p>Scrolling event list with instant severity coloring.</p>
+                    </div>
+                    <div class="info-card">
+                        <strong style="color: var(--accent);">Host Metrics Panel</strong>
+                        <p>Deep dive into specific IP behavior, history, and baseline stats.</p>
+                    </div>
+                    <div class="info-card">
+                        <strong style="color: var(--accent);">Log Console</strong>
+                        <p>Collapsible view into system heartbeat and debug traces.</p>
+                    </div>
+                </div>
+
+                <div class="info-card row" style="background: var(--bg-active); border-color: var(--accent-green);">
+                    <div class="icon-circle" style="color: var(--accent-green); border-color: var(--accent-green);">⚡</div>
+                    <div>
+                        <strong style="color: var(--accent-green); font-size: 18px;">In-Memory Filtering</strong>
+                        <p>UI filters (by host, severity) apply instantly in-memory without blocking or waiting for database queries.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 16: Sprint 4 — Administration & Configuration -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Sprint 4: Administration & Settings</h2>
+            <span class="sprint-badge">Sprint 4 / 4</span>
+        </div>
+        <div class="content-card">
+            <div class="flex-col">
+                <div class="chevron-card">
+                    <div class="icon-circle" style="width: 40px; height: 40px; font-size: 20px;">⚙️</div>
+                    <div>
+                        <h3 style="margin: 0 0 5px 0;">Runtime Settings Panel</h3>
+                        <p style="margin: 0;">All detector thresholds (k-factors, windows, cooldowns) are tunable live. No system restart required—changes propagate to the engine instantly via configuration injection.</p>
+                    </div>
+                </div>
+                <div class="chevron-card">
+                    <div class="icon-circle" style="width: 40px; height: 40px; font-size: 20px;">📊</div>
+                    <div>
+                        <h3 style="margin: 0 0 5px 0;">Data Management & CSV Export</h3>
+                        <p style="margin: 0;">One-click generation of forensic reports from the SQLite alerts table, empowering post-incident analysis.</p>
+                    </div>
+                </div>
+                <div class="chevron-card">
+                    <div class="icon-circle" style="width: 40px; height: 40px; font-size: 20px;">♻️</div>
+                    <div>
+                        <h3 style="margin: 0 0 5px 0;">Baseline Retraining</h3>
+                        <p style="margin: 0;">Administrators can trigger a manual baseline reset for specific hosts or globally if network topology changes. Enforced cooldowns prevent accidental spamming.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 17: Dataset & Testing -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Dataset & Testing Environment</h2>
+        </div>
+        <div class="content-card grid-2">
+            <div class="info-card">
+                <strong style="color: var(--accent); font-size: 18px;">Environment Setup</strong>
+                <p>Controlled local network to simulate both normal user behavior and targeted attacks safely without risking external infrastructure.</p>
+            </div>
+            <div class="info-card">
+                <strong style="color: var(--accent); font-size: 18px;">Normal Traffic Generation</strong>
+                <p>Real workstation browsing, media streaming, and local file transfers executed to build authentic, noisy EMA baselines.</p>
+            </div>
+            <div class="info-card">
+                <strong style="color: var(--accent); font-size: 18px;">Attack Simulation</strong>
+                <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 5px;">
+                    <p>• <strong>Vertical Scans:</strong> <code>nmap -sS &lt;target&gt;</code></p>
+                    <p>• <strong>Horizontal Scans:</strong> <code>nmap -p 80 192.168.1.0/24</code></p>
+                    <p>• <strong>SYN Floods:</strong> Burst traffic & rapid connection cycling</p>
+                </div>
+            </div>
+            <div class="info-card" style="background: var(--bg-active); border-color: var(--accent);">
+                <strong style="color: var(--accent); font-size: 18px;">Calibration Cycle</strong>
+                <p>Iterative observe-and-adjust methodology to tune Z-score thresholds, practically eliminating false positives during heavy web browsing.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 18: Results & Detection Demonstration -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Results & Detection</h2>
+        </div>
+        <div class="content-card flex-col">
+            <div class="grid-2">
+                <div class="info-card">
+                    <strong style="color: var(--accent-green); font-size: 18px;">Signature Success</strong>
+                    <p style="margin-top: 10px;">• Instantaneous detection of standard Nmap scans.</p>
+                    <p>• Accurate identification of SYN floods breaking fixed connection thresholds.</p>
+                </div>
+                <div class="info-card">
+                    <strong style="color: var(--accent-green); font-size: 18px;">Behavioral Success</strong>
+                    <p style="margin-top: 10px;">• Successfully flagged sudden bursts in unique destination ports.</p>
+                    <p>• Novelty classification correctly tagged newly seen hosts vs. recurring offenders.</p>
+                </div>
+            </div>
+            
+            <div class="info-card flex-col" style="margin-top: 10px;">
+                <strong style="color: var(--accent); font-size: 18px; text-align: center;">Severity Tiering in Action</strong>
+                <div class="grid-4" style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 15px;">
+                    <div class="block-card">
+                        <span class="badge low">LOW</span>
+                        <p style="font-size: 14px; margin-top: 10px;">Minor deviation during a large file download.</p>
+                    </div>
+                    <div class="block-card">
+                        <span class="badge medium">MEDIUM</span>
+                        <p style="font-size: 14px; margin-top: 10px;">Sustained unusual connection rates.</p>
+                    </div>
+                    <div class="block-card">
+                        <span class="badge high">HIGH</span>
+                        <p style="font-size: 14px; margin-top: 10px;">Clear behavioral anomaly matching attack profiles.</p>
+                    </div>
+                    <div class="block-card" style="border-color: var(--accent-red);">
+                        <span class="badge critical">CRITICAL</span>
+                        <p style="font-size: 14px; margin-top: 10px;">Aggressive scanning or flooding (bypasses cooldowns).</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 19: Performance Analysis -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Performance Analysis</h2>
+        </div>
+        <div class="content-card grid-2">
+            <div class="info-card row">
+                <div class="icon-circle">🛡️</div>
+                <div>
+                    <strong style="color: var(--accent); font-size: 18px;">AlertGate Efficacy</strong>
+                    <p>Successfully prevented alert fatigue. A sustained 5-minute flood generated 3 discrete alerts instead of 30,000.</p>
+                </div>
+            </div>
+            <div class="info-card row">
+                <div class="icon-circle">📈</div>
+                <div>
+                    <strong style="color: var(--accent); font-size: 18px;">Queue Depth Stability</strong>
+                    <p>Even under flood conditions, decoupling capture and analysis kept queue depth near zero (validated via Heartbeat logs).</p>
+                </div>
+            </div>
+            <div class="info-card row">
+                <div class="icon-circle">🗄️</div>
+                <div>
+                    <strong style="color: var(--accent); font-size: 18px;">Database Throughput</strong>
+                    <p>SQLite WAL mode handled high-frequency batch inserts from the 10-second aggregations without locking the GUI reads.</p>
+                </div>
+            </div>
+            <div class="info-card row" style="border-color: var(--accent-orange);">
+                <div class="icon-circle" style="border-color: var(--accent-orange); color: var(--accent-orange);">⚠️</div>
+                <div>
+                    <strong style="color: var(--accent-orange); font-size: 18px;">Known Limitation</strong>
+                    <p>The architecture remains vulnerable to "low-and-slow" attacks, as the 10-second tumbling window resets before slow attack thresholds trigger.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 20: Challenges Overcome -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Challenges Overcome</h2>
+        </div>
+        <div class="content-card flex-col">
+            <div class="info-card row" style="align-items: center;">
+                <div class="block-card" style="min-width: 150px; border-color: var(--accent-red); margin: 0;"><strong>Challenge:</strong><br>False Positives</div>
+                <div style="font-size: 24px; color: var(--text-muted);">➔</div>
+                <div>
+                    <strong style="color: var(--accent-green);">Resolution</strong>
+                    <p>Shifted from static rules to EMA-smoothed baselines and Z-score evaluations to allow thresholds to float dynamically.</p>
+                </div>
+            </div>
+            <div class="info-card row" style="align-items: center;">
+                <div class="block-card" style="min-width: 150px; border-color: var(--accent-red); margin: 0;"><strong>Challenge:</strong><br>Scapy CPU Load</div>
+                <div style="font-size: 24px; color: var(--text-muted);">➔</div>
+                <div>
+                    <strong style="color: var(--accent-green);">Resolution</strong>
+                    <p>Replaced native Scapy sniffing with a TShark subprocess for heavy lifting, reserving Python only for metadata analysis.</p>
+                </div>
+            </div>
+            <div class="info-card row" style="align-items: center;">
+                <div class="block-card" style="min-width: 150px; border-color: var(--accent-red); margin: 0;"><strong>Challenge:</strong><br>DB Lock Contention</div>
+                <div style="font-size: 24px; color: var(--text-muted);">➔</div>
+                <div>
+                    <strong style="color: var(--accent-green);">Resolution</strong>
+                    <p>Implemented SQLite Write-Ahead Logging (WAL) and automatic retry mechanisms for safe concurrent DB access.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 21: Future Improvements -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Future Improvements</h2>
+        </div>
+        <div class="content-card grid-2">
+            <div class="info-card">
+                <div class="icon-circle">🤖</div>
+                <strong style="color: var(--accent); font-size: 18px; margin-top: 10px;">Machine Learning Integration</strong>
+                <p>Replace basic statistical anomaly detection with advanced ML models (e.g., Isolation Forests) to catch low-and-slow attacks.</p>
+            </div>
+            <div class="info-card">
+                <div class="icon-circle">🌐</div>
+                <strong style="color: var(--accent); font-size: 18px; margin-top: 10px;">Enterprise Deployment</strong>
+                <p>Upgrade from a local workstation sniffer to a SPAN/Gateway deployment architecture for whole-network visibility.</p>
+            </div>
+            <div class="info-card">
+                <div class="icon-circle">🛡️</div>
+                <strong style="color: var(--accent); font-size: 18px; margin-top: 10px;">Automated Active Response</strong>
+                <p>Integration with local firewalls (e.g., `iptables` / Windows Defender) to automatically isolate compromised hosts upon detection.</p>
+            </div>
+            <div class="info-card">
+                <div class="icon-circle">📑</div>
+                <strong style="color: var(--accent); font-size: 18px; margin-top: 10px;">SIEM Compliance</strong>
+                <p>Add support for exporting alerts in structured formats (Syslog/CEF) for direct integration into enterprise SOC environments.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 22: Conclusion -->
+    <div class="slide">
+        <div class="slide-header">
+            <h2>Conclusion</h2>
+        </div>
+        <div class="content-card flex-col">
+            <div class="info-card row">
+                <div class="number-circle">✓</div>
+                <div>
+                    <strong style="color: var(--accent); font-size: 18px;">Project Success</strong>
+                    <p>Successfully met all 17 Product Backlog Items (PBIs) defined at the start of the project.</p>
+                </div>
+            </div>
+            <div class="info-card row">
+                <div class="number-circle">✓</div>
+                <div>
+                    <strong style="color: var(--accent); font-size: 18px;">Hybrid Superiority</strong>
+                    <p>Demonstrated that combining signatures with behavioral baselines provides a far more resilient defense than either method alone.</p>
+                </div>
+            </div>
+            <div class="info-card row">
+                <div class="number-circle">✓</div>
+                <div>
+                    <strong style="color: var(--accent); font-size: 18px;">Agile Delivery</strong>
+                    <p>The iterative Scrum methodology allowed for continuous pivot and optimization (e.g., successfully swapping capture engines mid-project).</p>
+                </div>
+            </div>
+            <div class="info-card row" style="background: var(--bg-active); border-color: var(--accent-green);">
+                <div class="number-circle" style="border-color: var(--accent-green); color: var(--accent-green);">★</div>
+                <div>
+                    <strong style="color: var(--accent-green); font-size: 18px;">Final Value Delivered</strong>
+                    <p>Engineered a highly practical, observable, and educational security tool that provides immediate network insights without the enterprise bloat.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 23: Q&A -->
+    <div class="slide title-slide">
+        <h1>Thank You</h1>
+        <h3 style="color: var(--accent-green);">Questions & Discussion</h3>
+        <div class="title-meta" style="margin-top: 40px; text-align: center;">
+            <p><strong>System:</strong> Hybrid Intrusion Detection Engine</p>
+            <p><strong>Candidate:</strong> AYADI Wassim</p>
+            <p><strong>Academic Year:</strong> 2025–2026</p>
+        </div>
+    </div>
+
+</div>
+
+<!-- Navigation Bar -->
+<div class="nav-bar">
+    <button class="nav-btn" id="prevBtn" onclick="prevSlide()">&#8592; Previous</button>
+    <div class="slide-counter" id="slideCounter">1 / 23</div>
+    <button class="nav-btn" id="nextBtn" onclick="nextSlide()">Next &#8594;</button>
+</div>
+
+<script>
+    const slides = document.querySelectorAll('.slide');
+    const progressBar = document.getElementById('progressBar');
+    const slideCounter = document.getElementById('slideCounter');
+    let currentSlide = 0;
+
+    function updatePresentation() {
+        slides.forEach((slide, index) => {
+            if (index === currentSlide) {
+                slide.classList.add('active');
+            } else {
+                slide.classList.remove('active');
+            }
+        });
+
+        // Update Progress Bar
+        const progress = ((currentSlide) / (slides.length - 1)) * 100;
+        progressBar.style.width = progress + '%';
+
+        // Update Counter
+        slideCounter.innerText = `${currentSlide + 1} / ${slides.length}`;
+
+        // Update Buttons state visually
+        document.getElementById('prevBtn').style.opacity = currentSlide === 0 ? '0.5' : '1';
+        document.getElementById('nextBtn').style.opacity = currentSlide === slides.length - 1 ? '0.5' : '1';
+    }
+
+    function nextSlide() {
+        if (currentSlide < slides.length - 1) {
+            currentSlide++;
+            updatePresentation();
+        }
+    }
+
+    function prevSlide() {
+        if (currentSlide > 0) {
+            currentSlide--;
+            updatePresentation();
+        }
+    }
+
+    // Keyboard Navigation
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === ' ') {
+            nextSlide();
+        } else if (e.key === 'ArrowLeft') {
+            prevSlide();
+        }
+    });
+
+    // Initialize
+    updatePresentation();
+</script>
+
+</body>
+</html>

@@ -81,34 +81,13 @@ class ConnectionTracker:
             self._failed_times[src] = deque()
         self._failed_times[src].append(now)
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def get_host_stats(self, src: str, now: float | None = None) -> dict:
         """
         Return novelty classification and failed-connection ratio for *src*.
 
-        Both values are computed over the sliding COUNTER_WINDOW so that
-        historical noise does not permanently penalise a host.
-
-        Parameters
-        ----------
-        src : str
-            Source IP address string.
-        now : float | None
-            Current epoch time.  Defaults to ``time.time()`` when omitted so
-            callers that already hold a timestamp can pass it in to avoid a
-            redundant syscall.
-
-        Returns
-        -------
-        dict with keys:
-            "novelty"                 – "new" | "known" | "recurring" | "loopback"
-            "failed_connection_ratio" – float in [0.0, 1.0]
-
-        If *src* has never been seen the safe defaults used by detectors that
-        query this method before any SYN from that host are returned.
+        Returns dict with keys:
+            "novelty"                 - "new" | "known" | "recurring" | "loopback"
+            "failed_connection_ratio" - float in [0.0, 1.0]
         """
         if now is None:
             now = time.time()
@@ -124,7 +103,34 @@ class ConnectionTracker:
             "failed_connection_ratio": ratio,
         }
 
+    def compute_penalty_multiplier(
+        self,
+        src: str,
+        now: float,
+        sensitivity_penalties: dict,
+        baselines: dict,
+        high_failure_ratio_threshold: float,
+    ) -> float:
+        """
+        Return the combined sensitivity-penalty multiplier for *src*.
+
+        """
+        stats = self.get_host_stats(src, now)
+        multiplier = 1.0
+
+        # Snapshot once to be safe against concurrent dict replacement.
+        penalties = sensitivity_penalties
+
+        if stats["novelty"] == "new" and baselines.get(src) is None:
+            multiplier *= penalties.get("novelty_new", 1.0)
+
+        if stats["failed_connection_ratio"] > high_failure_ratio_threshold:
+            multiplier *= penalties.get("high_failure_ratio", 1.0)
+
+        return multiplier
+
     def analyze_packet(self, pkt) -> list[dict] | None:
+
         if not pkt.haslayer("IP") or not pkt.haslayer("TCP"):
             return None
 
